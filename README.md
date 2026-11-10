@@ -67,7 +67,8 @@ Each run writes `report.md`, `summary.png`, metrics CSVs, out-of-fold prediction
 
 ```bash
 git clone https://github.com/facebookresearch/tribev2 && pip install -e "tribev2[plotting]"
-huggingface-cli login
+pip install -U huggingface_hub   # the old `huggingface-cli` was replaced by `hf`
+hf auth login                    # paste a read token from huggingface.co/settings/tokens
 ```
 
 **2. Prepare two CSVs** (see `examples/`):
