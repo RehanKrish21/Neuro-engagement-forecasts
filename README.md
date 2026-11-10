@@ -51,8 +51,8 @@ flowchart LR
 ## Quickstart (no GPU needed)
 
 ```bash
-git clone https://github.com/RehanKrish21/neuro-engagement-forecasting.git
-cd neuro-engagement-forecasting
+git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
+cd Neuro-engagement-forecasts
 pip install -e ".[test]"
 pytest -q                                 # 17 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
