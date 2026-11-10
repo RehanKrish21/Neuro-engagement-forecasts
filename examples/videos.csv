@@ -1,0 +1,4 @@
+video_id,creator_id,path,duration_s,log_followers,post_hour
+vid_001,creator_a,videos/vid_001.mp4,34,10.2,18
+vid_002,creator_a,videos/vid_002.mp4,21,10.2,12
+vid_003,creator_b,videos/vid_003.mp4,58,8.7,20
