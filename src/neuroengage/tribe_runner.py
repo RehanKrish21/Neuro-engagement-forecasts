@@ -84,8 +84,12 @@ class TribeExtractor:
         manifest: pd.DataFrame,
         out_dir: str | Path,
         overwrite: bool = False,
+        skip_errors: bool = True,
     ) -> pd.DataFrame:
         """Extract every video in ``manifest`` (columns ``video_id``, ``path``).
+
+        Re-running resumes: videos with a cached ``.npz`` are not recomputed.
+        Videos that fail are logged to ``failures.csv`` and skipped.
 
         Writes ``<out_dir>/preds/<video_id>.npz`` (full vertex predictions) and
         returns the long-format network time series, also saved as
@@ -93,17 +97,29 @@ class TribeExtractor:
         """
         out_dir = Path(out_dir)
         (out_dir / "preds").mkdir(parents=True, exist_ok=True)
-        frames = []
-        for row in manifest.itertuples(index=False):
+        frames, failures = [], []
+        total = len(manifest)
+        for i, row in enumerate(manifest.itertuples(index=False), 1):
             vid = str(row.video_id)
             cache = out_dir / "preds" / f"{vid}.npz"
-            if cache.exists() and not overwrite:
-                pred = TribePrediction.load(cache)
-            else:
-                logger.info("TRIBE v2: %s", vid)
-                pred = self.predict(vid, row.path)
-                pred.save(cache)
+            try:
+                if cache.exists() and not overwrite:
+                    pred = TribePrediction.load(cache)
+                else:
+                    logger.info("TRIBE v2 [%d/%d]: %s", i, total, vid)
+                    pred = self.predict(vid, row.path)
+                    pred.save(cache)
+            except Exception as exc:  # corrupt/silent/too-short videos
+                if not skip_errors:
+                    raise
+                logger.warning("Skipping %s: %s", vid, exc)
+                failures.append({"video_id": vid, "error": repr(exc)})
+                continue
             frames.append(to_long(pred, self.masks))
+        if failures:
+            pd.DataFrame(failures).to_csv(out_dir / "failures.csv", index=False)
+        if not frames:
+            raise RuntimeError("TRIBE v2 failed on every video; see failures.csv")
         long = pd.concat(frames, ignore_index=True)
         save_table(long, out_dir / "network_timeseries")
         return long

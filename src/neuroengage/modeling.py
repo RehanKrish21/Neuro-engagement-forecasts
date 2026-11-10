@@ -22,7 +22,7 @@ from sklearn.base import RegressorMixin, clone
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import RidgeCV
 from sklearn.metrics import r2_score
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -102,23 +102,31 @@ def evaluate_video_model(
     data: pd.DataFrame,
     target: str,
     feature_sets: dict[str, list[str]],
-    group_col: str = "creator_id",
+    group_col: str | None = "creator_id",
     n_splits: int = 5,
     model: str = "ridge",
     seed: int = 0,
 ) -> EvalResult:
-    """Grouped cross-validation of each feature set for one video-level target.
+    """Cross-validation of each feature set for one video-level target.
+
+    With ``group_col`` (e.g. creator), folds hold out whole groups. With
+    ``group_col=None`` (datasets without creator IDs, like SnapUGC), folds
+    are shuffled K-fold over videos.
 
     Metrics per fold: Spearman rank correlation (does the model *order*
     videos correctly? usually what matters for "which draft should I post")
     and R^2.
     """
     _check_sets(data, feature_sets)
-    data = data.reset_index(drop=True)
+    data = data[data[target].notna()].reset_index(drop=True)
     y = data[target].to_numpy(float)
-    groups = data[group_col].to_numpy()
-    n_splits = min(n_splits, len(np.unique(groups)))
-    folds = list(GroupKFold(n_splits=n_splits).split(data, y, groups))
+    if group_col is None:
+        n_splits = min(n_splits, len(data))
+        folds = list(KFold(n_splits=n_splits, shuffle=True, random_state=seed).split(data))
+    else:
+        groups = data[group_col].to_numpy()
+        n_splits = min(n_splits, len(np.unique(groups)))
+        folds = list(GroupKFold(n_splits=n_splits).split(data, y, groups))
     rows, oof = [], {"video_id": data["video_id"], "y_true": y}
     for name, cols in feature_sets.items():
         X = data[cols].to_numpy(float)

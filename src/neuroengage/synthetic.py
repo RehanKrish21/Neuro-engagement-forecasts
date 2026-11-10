@@ -115,3 +115,22 @@ def make_vertex_predictions(
         mask = np.isin(labels, net.areas)
         preds[:, mask] += network_ts[net.name].to_numpy()[:, None]
     return preds
+
+
+def make_score_dataset(seed: int = 0, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """SnapUGC-shaped synthetic data: one NAWP and ECR score per video, no creators.
+
+    Returns ``(manifest, network_timeseries)``; the manifest has ``video_id,
+    duration_s, nawp, ecr``. ``ecr`` is retention at 5 s; ``nawp`` is average
+    retention min-max scaled to [0, 1]. Same planted relationship as
+    :func:`make_dataset` (pass ``beta_engagement=0, beta_aversion=0`` for null).
+    """
+    manifest, ts, ret = make_dataset(seed=seed, **kwargs)
+    per_video = ret.groupby("video_id")["retention"]
+    avg = per_video.mean()
+    ecr = ret[ret["t"] == 5].set_index("video_id")["retention"]
+    scores = pd.DataFrame(
+        {"nawp": (avg - avg.min()) / (avg.max() - avg.min()), "ecr": ecr}
+    ).reset_index()
+    manifest = manifest[["video_id", "duration_s"]].merge(scores, on="video_id")
+    return manifest, ts

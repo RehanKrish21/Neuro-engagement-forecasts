@@ -54,9 +54,10 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 17 tests
+pytest -q                                 # 23 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
+neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
 ```
 
 Each run writes `report.md`, `summary.png`, metrics CSVs, out-of-fold predictions and fitted models to the output folder.
@@ -88,6 +89,33 @@ neuroengage score --models results/run/models.joblib --timeseries work_new/netwo
 
 A few hundred videos across several creators is the minimum for the video-level comparison to say anything. The per-second model gets far more rows per video, so it becomes informative sooner.
 
+## Public benchmark: SnapUGC
+
+[SnapUGC](https://github.com/dasongli1/SnapUGC_Engagement) (Li et al., ECCV 2024) is the largest public short-video engagement dataset: about 90–120k Snapchat Spotlight videos (5–60 s, each with more than 2,000 views). Each video has two labels:
+
+- **NAWP** (normalized average watch percentage): how much of the video people watch, normalized across lengths.
+- **ECR** (engagement continuation rate): the share of viewers who stay at least **5 seconds**. In other words, a hook score.
+
+It has no per-second retention curves or creator IDs. Use `train-scores`, which evaluates per-video targets with shuffled K-fold. The default hook window is set to 5 s to match ECR.
+
+```bash
+# 1. Download the train/val sets via dataset/readme.md in the SnapUGC repo, then:
+neuroengage snapugc-prepare --labels snapugc/train.csv --videos-dir snapugc/train_videos \
+    --n 3000 --out work/snapugc_manifest.csv      # stratified subsample across NAWP
+# 2. Run TRIBE v2 (GPU). Resumable: re-running skips finished videos; failures go to failures.csv
+neuroengage extract --manifest work/snapugc_manifest.csv --out work/snapugc
+# 3. Compare baseline vs brain vs both
+neuroengage train-scores --manifest work/snapugc_manifest.csv \
+    --timeseries work/snapugc/network_timeseries --targets nawp,ecr \
+    --baseline-cols duration_s,title_n_words,has_description --out results/snapugc
+```
+
+Label column names are detected automatically (`Id`, `NAWP`, `ECR`, any case). If your copy names them differently, override with `--id-col / --nawp-col / --ecr-col`. Check SnapUGC's terms of use before using the data.
+
+![SnapUGC-style demo on synthetic data](docs/snapugc_demo_summary.png)
+
+> Synthetic again (`neuroengage demo --snapugc`). This shows the per-video pipeline end to end, not a result on SnapUGC itself.
+
 ## What would count as a real result
 
 - `baseline+brain` beats `baseline` on held-out creators, in most folds, by a margin larger than the fold-to-fold spread.
@@ -105,6 +133,8 @@ A few hundred videos across several creators is the minimum for the video-level 
 
 ## Roadmap
 
+- [x] SnapUGC support (per-video NAWP / ECR targets)
+- [ ] Run TRIBE v2 on a SnapUGC subset and publish the real comparison
 - [ ] Run on a real channel's back catalogue with YouTube Analytics retention curves
 - [ ] Add raw-embedding baselines (V-JEPA 2, Wav2Vec-BERT, Llama 3.2) as a built-in feature set
 - [ ] Train a subcortical (ventral striatum) readout with `tribev2.grids.run_subcortical`
@@ -121,9 +151,10 @@ src/neuroengage/
   retention.py      retention curves → per-second hazard and video targets
   modeling.py       grouped CV, creator normalization, feature-set comparison
   pipeline.py       end-to-end train/evaluate → report.md + figure + models
+  snapugc.py        SnapUGC label loader + stratified subsampling → manifest
   synthetic.py      planted-signal and null synthetic data for demos/tests
   cli.py            neuroengage {demo, extract, train, score}
-tests/              17 tests, including signal-recovery and null-control checks
+tests/              23 tests, including signal-recovery and null-control checks
 ```
 
 ## References

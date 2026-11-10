@@ -1,4 +1,4 @@
-"""Command line: ``neuroengage {demo,extract,train,score}``."""
+"""Command line: ``neuroengage {demo,extract,train,train-scores,snapugc-prepare,score}``."""
 
 from __future__ import annotations
 
@@ -14,24 +14,60 @@ from .retention import resample_to_seconds
 from .tribe_runner import load_table
 
 
-def _demo(args) -> None:
-    from .pipeline import run_training
-    from .synthetic import make_dataset
+SYNTHETIC_NOTE = (
+    "> **Synthetic data.** These numbers show the pipeline recovers a signal "
+    "planted by `neuroengage.synthetic`. They are not evidence that TRIBE v2 "
+    "predicts real engagement."
+)
 
-    beta = 0.0 if args.null else None
-    kwargs = {"beta_engagement": beta, "beta_aversion": beta} if args.null else {}
-    manifest, ts, ret = make_dataset(seed=args.seed, **kwargs)
+
+def _demo(args) -> None:
+    from .pipeline import run_score_training, run_training
+    from .synthetic import make_dataset, make_score_dataset
+
+    kwargs = {"beta_engagement": 0.0, "beta_aversion": 0.0} if args.null else {}
     kind = "NULL synthetic data (no planted signal)" if args.null else "synthetic data"
-    run_training(
-        manifest, ts, ret, args.out,
-        baseline_cols=["duration_s", "log_followers", "post_hour"],
-        seed=args.seed,
-        title=f"Pipeline demo on {kind}",
-        note=(
-            "> **Synthetic data.** These numbers show the pipeline recovers a signal "
-            "planted by `neuroengage.synthetic`. They are not evidence that TRIBE v2 "
-            "predicts real engagement."
-        ),
+    if args.snapugc:
+        manifest, ts = make_score_dataset(seed=args.seed, **kwargs)
+        run_score_training(
+            manifest, ts, ["nawp", "ecr"], args.out, baseline_cols=["duration_s"],
+            hook_seconds=5, seed=args.seed,
+            title=f"SnapUGC-style demo on {kind}", note=SYNTHETIC_NOTE,
+        )
+    else:
+        manifest, ts, ret = make_dataset(seed=args.seed, **kwargs)
+        run_training(
+            manifest, ts, ret, args.out,
+            baseline_cols=["duration_s", "log_followers", "post_hour"],
+            seed=args.seed, title=f"Pipeline demo on {kind}", note=SYNTHETIC_NOTE,
+        )
+    print(f"Wrote {args.out}/report.md")
+
+
+def _snapugc_prepare(args) -> None:
+    from .snapugc import build_manifest, load_labels
+
+    overrides = {k: v for k, v in (("nawp", args.nawp_col), ("ecr", args.ecr_col)) if v}
+    labels = load_labels(args.labels, id_col=args.id_col or None, target_cols=overrides)
+    manifest = build_manifest(labels, args.videos_dir, n=args.n, seed=args.seed)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    manifest.to_csv(args.out, index=False)
+    print(f"Wrote {len(manifest)} videos to {args.out}")
+
+
+def _train_scores(args) -> None:
+    from .pipeline import run_score_training
+
+    manifest = pd.read_csv(args.manifest)
+    ts = load_table(args.timeseries)
+    baseline = args.baseline_cols.split(",") if args.baseline_cols else None
+    run_score_training(
+        manifest, ts, args.targets.split(","), args.out,
+        baseline_cols=baseline,
+        group_col=args.group_col or None,
+        normalize_within_group=args.normalize_within_group,
+        hook_seconds=args.hook_seconds,
+        n_splits=args.folds, seed=args.seed, title=args.title,
     )
     print(f"Wrote {args.out}/report.md")
 
@@ -92,7 +128,34 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--out", default="results/demo")
     d.add_argument("--seed", type=int, default=0)
     d.add_argument("--null", action="store_true", help="Synthetic data with no brain signal")
+    d.add_argument("--snapugc", action="store_true", help="Per-video scores (NAWP/ECR) instead of curves")
     d.set_defaults(func=_demo)
+
+    sp = sub.add_parser("snapugc-prepare", help="Build a manifest from SnapUGC labels + videos")
+    sp.add_argument("--labels", required=True, help="SnapUGC label CSV (train or val)")
+    sp.add_argument("--videos-dir", required=True, help="Folder containing <Id>.mp4 files")
+    sp.add_argument("--n", type=int, default=None, help="Stratified subsample size")
+    sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--id-col", default="", help="Override the video id column name")
+    sp.add_argument("--nawp-col", default="", help="Override the NAWP column name")
+    sp.add_argument("--ecr-col", default="", help="Override the ECR column name")
+    sp.add_argument("--out", default="work/snapugc_manifest.csv")
+    sp.set_defaults(func=_snapugc_prepare)
+
+    ts_ = sub.add_parser("train-scores", help="Evaluate brain features vs baselines on per-video scores")
+    ts_.add_argument("--manifest", required=True, help="CSV with video_id, targets, baseline cols")
+    ts_.add_argument("--timeseries", default="work/network_timeseries")
+    ts_.add_argument("--targets", default="nawp,ecr", help="Comma-separated target columns")
+    ts_.add_argument("--baseline-cols", default="duration_s", help="Comma-separated columns")
+    ts_.add_argument("--group-col", default="", help="e.g. creator_id; empty = shuffled K-fold")
+    ts_.add_argument("--normalize-within-group", action="store_true")
+    ts_.add_argument("--hook-seconds", type=float, default=5.0,
+                     help="Length of the opening window (SnapUGC's ECR uses 5 s)")
+    ts_.add_argument("--folds", type=int, default=5)
+    ts_.add_argument("--seed", type=int, default=0)
+    ts_.add_argument("--title", default="Results")
+    ts_.add_argument("--out", default="results/scores_run")
+    ts_.set_defaults(func=_train_scores)
 
     e = sub.add_parser("extract", help="Run TRIBE v2 over videos (needs GPU + tribev2)")
     e.add_argument("--manifest", required=True, help="CSV with video_id,path")

@@ -180,3 +180,108 @@ def write_report(out_dir, info, video_summary, drop_summary, top, fig_path, titl
         "",
     ]
     (out_dir / "report.md").write_text("\n".join(parts))
+
+
+def run_score_training(
+    manifest: pd.DataFrame,
+    long_ts: pd.DataFrame,
+    targets: list[str],
+    out_dir: str | Path,
+    baseline_cols: list[str] | None = None,
+    group_col: str | None = None,
+    normalize_within_group: bool = False,
+    hook_seconds: float = 3.0,
+    n_splits: int = 5,
+    seed: int = 0,
+    title: str = "Results",
+    note: str = "",
+) -> dict:
+    """Video-level evaluation against per-video scores (no retention curves).
+
+    For datasets that report one number per video, such as SnapUGC's NAWP and
+    ECR. ``manifest`` holds ``video_id``, the target columns and any baseline
+    columns. ``group_col`` (e.g. creator) makes folds hold out whole groups and,
+    with ``normalize_within_group``, z-scores targets within group.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    vf = video_features(long_ts, hook_seconds=hook_seconds)
+    brain_cols = [c for c in vf.columns if "__" in c]
+    dup = [c for c in vf.columns if c in manifest.columns and c != "video_id"]
+    video = manifest.merge(vf.drop(columns=dup), on="video_id")
+    if video.empty:
+        raise ValueError("No overlap between manifest video_ids and the time series")
+    missing_t = [t for t in targets if t not in video]
+    if missing_t:
+        raise KeyError(f"Targets not in manifest: {missing_t}")
+    baseline_cols = [c for c in (baseline_cols or ["duration_s"]) if c in video.columns]
+    if not baseline_cols:
+        raise ValueError("No baseline columns found")
+
+    sets = {
+        "baseline": baseline_cols,
+        "brain": brain_cols,
+        "baseline+brain": baseline_cols + brain_cols,
+    }
+    summaries, fitted = [], {}
+    for target in targets:
+        col = target
+        if group_col and normalize_within_group:
+            col = f"{target}__group_z"
+            video[col] = creator_normalize(video, target, creator_col=group_col).to_numpy()
+        res = evaluate_video_model(video, col, sets, group_col=group_col, n_splits=n_splits, seed=seed)
+        summaries.append(res.summary.assign(target=target))
+        res.oof_predictions.to_csv(out_dir / f"oof_{target}.csv", index=False)
+        rows = video[video[col].notna()]
+        fitted[target] = {
+            "cols": sets["baseline+brain"],
+            "model": fit_final(rows, col, sets["baseline+brain"], "ridge", seed),
+        }
+    summary = pd.concat(summaries, ignore_index=True)
+    summary.to_csv(out_dir / "video_level_metrics.csv", index=False)
+    joblib.dump(fitted, out_dir / "models.joblib")
+
+    tops = []
+    for target, m in fitted.items():
+        tops.append(top_coefficients(m["model"], m["cols"]).assign(target=target))
+    top = pd.concat(tops, ignore_index=True)
+    top.to_csv(out_dir / "top_features.csv", index=False)
+
+    fig_path = None
+    try:
+        from .plots import plot_summary
+
+        fig_path = plot_summary(summary, None, out_dir / "summary.png", title=title)
+    except ImportError:
+        pass
+
+    info = {
+        "n_videos": int(len(video)),
+        "targets": targets,
+        "baseline_cols": baseline_cols,
+        "group_col": group_col,
+        "hook_seconds": hook_seconds,
+        "n_brain_features": len(brain_cols),
+    }
+    (out_dir / "run_info.json").write_text(json.dumps(info, indent=2))
+
+    v = summary[["target", "feature_set", "spearman_mean", "spearman_std", "r2_mean",
+                 "spearman_gain_vs_baseline", "folds_better_than_baseline"]]
+    folds = (f"folds hold out whole `{group_col}` groups" if group_col
+             else "shuffled K-fold over videos (no creator IDs)")
+    parts = [f"# {title}", ""]
+    if note:
+        parts += [note, ""]
+    parts += [
+        f"{info['n_videos']} videos, {n_splits}-fold cross-validation, {folds}. "
+        f"Baseline: {', '.join(f'`{c}`' for c in baseline_cols)}.",
+        "",
+    ]
+    if fig_path:
+        parts += [f"![summary]({Path(fig_path).name})", ""]
+    parts += ["## Held-out performance", "", _fmt(v), ""]
+    for target in targets:
+        parts += [f"## Largest standardized coefficients: {target} (baseline+brain ridge)", "",
+                  _fmt(top[top.target == target].drop(columns="target")), ""]
+    (out_dir / "report.md").write_text("\n".join(parts))
+    return {"video": summary, "info": info}
