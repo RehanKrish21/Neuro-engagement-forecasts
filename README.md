@@ -94,9 +94,9 @@ A few hundred videos across several creators is the minimum for the video-level 
 - The gain holds against a **stronger baseline**: the raw V-JEPA 2 / Wav2Vec-BERT / Llama embeddings TRIBE is built on. Add them as baseline columns. If the brain-network layer doesn't beat its own inputs, the "brain" framing isn't adding predictive value (it may still add interpretability).
 - The same analysis run with `--null`-style shuffled targets shows no gain.
 
-## Limitations (please read)
+## Limitations 
 
-- **This does not measure dopamine.** fMRI measures blood-oxygen (BOLD) signals, not neurotransmitters. TRIBE v2's released weights cover **cortex only**, while the ventral striatum and midbrain, where reward-prediction signals live, are subcortical. The `valuation_mpfc` network is a cortical proxy for valuation, not a dopamine readout. The TRIBE repo includes a subcortical training grid (`tribev2.grids.run_subcortical`), which is the natural next step.
+- TRIBE v2's released weights cover **cortex only**, while the ventral striatum and midbrain, where reward-prediction signals live, are subcortical. The `valuation_mpfc` network is a cortical proxy for valuation, not a dopamine readout. The TRIBE repo includes a subcortical training grid (`tribev2.grids.run_subcortical`), which is the natural next step.
 - **Average brain, average viewer.** TRIBE predicts the response of an average participant from its training cohorts. Your audience may differ.
 - **Predicted, not measured.** Errors in TRIBE's predictions carry straight into the features. Treat everything here as a hypothesis generator until it is validated on real outcomes.
 - **Correlational.** A feature that predicts retention is not necessarily a lever you can pull.
