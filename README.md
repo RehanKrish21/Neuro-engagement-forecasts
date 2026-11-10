@@ -54,7 +54,7 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 23 tests
+pytest -q                                 # 24 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
 neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
@@ -116,6 +116,28 @@ Label column names are detected automatically (`Id`, `NAWP`, `ECR`, any case). I
 
 > Synthetic again (`neuroengage demo --snapugc`). This shows the per-video pipeline end to end, not a result on SnapUGC itself.
 
+## Running on a GPU: Colab or Modal
+
+TRIBE v2 runs V-JEPA 2 (video), Wav2Vec-BERT (audio) and Llama 3.2-3B (text) for every video, so it needs a GPU. **A100, L40S or L4 are recommended**: a 16 GB T4 will likely run out of memory. Everything after extraction runs on CPU.
+
+**Google Colab**: [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RehanKrish21/Neuro-engagement-forecasts/blob/main/notebooks/colab_snapugc.ipynb)
+
+The notebook installs everything, runs a one-video smoke test, downloads SnapUGC, and runs a stratified subset. Predictions are saved to Google Drive, so when Colab disconnects you just re-run the cell and it picks up where it stopped.
+
+**Modal** (`cloud/modal_app.py`): best for larger runs, because it splits the videos across several GPUs at once and you only pay while they run.
+
+```bash
+pip install modal && modal setup
+modal secret create huggingface HF_TOKEN=hf_xxx        # token with Llama 3.2 access
+modal volume create neuroengage-data
+modal run cloud/modal_app.py::download --split train  # SnapUGC → volume; prints label CSV + video folder
+modal run cloud/modal_app.py --labels <csv> --videos-dir <dir> --n 50 --shards 1    # pilot
+modal run cloud/modal_app.py --labels <csv> --videos-dir <dir> --n 3000 --shards 8  # 8 GPUs in parallel
+modal volume get neuroengage-data /runs/snapugc_n3000_seed0/results ./results
+```
+
+Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --shard-index K --num-shards N` on each machine, then `neuroengage merge-shards`.
+
 ## What would count as a real result
 
 - `baseline+brain` beats `baseline` on held-out creators, in most folds, by a margin larger than the fold-to-fold spread.
@@ -153,8 +175,10 @@ src/neuroengage/
   pipeline.py       end-to-end train/evaluate → report.md + figure + models
   snapugc.py        SnapUGC label loader + stratified subsampling → manifest
   synthetic.py      planted-signal and null synthetic data for demos/tests
-  cli.py            neuroengage {demo, extract, train, score}
-tests/              23 tests, including signal-recovery and null-control checks
+  cli.py            neuroengage {demo, extract, merge-shards, train, train-scores, snapugc-prepare, score}
+notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
+cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
+tests/              24 tests, including signal-recovery and null-control checks
 ```
 
 ## References

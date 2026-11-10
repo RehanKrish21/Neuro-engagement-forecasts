@@ -85,6 +85,7 @@ class TribeExtractor:
         out_dir: str | Path,
         overwrite: bool = False,
         skip_errors: bool = True,
+        table_name: str = "network_timeseries",
     ) -> pd.DataFrame:
         """Extract every video in ``manifest`` (columns ``video_id``, ``path``).
 
@@ -117,11 +118,12 @@ class TribeExtractor:
                 continue
             frames.append(to_long(pred, self.masks))
         if failures:
-            pd.DataFrame(failures).to_csv(out_dir / "failures.csv", index=False)
+            name = "failures.csv" if table_name == "network_timeseries" else f"failures_{table_name}.csv"
+            pd.DataFrame(failures).to_csv(out_dir / name, index=False)
         if not frames:
             raise RuntimeError("TRIBE v2 failed on every video; see failures.csv")
         long = pd.concat(frames, ignore_index=True)
-        save_table(long, out_dir / "network_timeseries")
+        save_table(long, out_dir / table_name)
         return long
 
 
@@ -154,3 +156,14 @@ def load_table(stem: str | Path) -> pd.DataFrame:
         if path.exists():
             return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
     raise FileNotFoundError(f"No table at {stem} (.parquet or .csv)")
+
+
+def merge_shards(out_dir: str | Path, pattern: str = "network_timeseries_shard*") -> Path:
+    """Concatenate per-shard time series tables into ``network_timeseries``."""
+    out_dir = Path(out_dir)
+    paths = sorted(p for p in out_dir.glob(pattern) if p.suffix in {".parquet", ".csv"})
+    if not paths:
+        raise FileNotFoundError(f"No {pattern} tables in {out_dir}")
+    frames = [load_table(p) for p in paths]
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(["video_id", "t"])
+    return save_table(merged, out_dir / "network_timeseries")

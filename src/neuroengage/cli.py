@@ -1,4 +1,4 @@
-"""Command line: ``neuroengage {demo,extract,train,train-scores,snapugc-prepare,score}``."""
+"""Command line: ``neuroengage {demo,extract,merge-shards,train,train-scores,snapugc-prepare,score}``."""
 
 from __future__ import annotations
 
@@ -76,10 +76,25 @@ def _extract(args) -> None:
     from .tribe_runner import TribeExtractor
 
     manifest = pd.read_csv(args.manifest)
-    TribeExtractor(cache_folder=Path(args.out) / "cache", device=args.device).run(
-        manifest, args.out, overwrite=args.overwrite
+    table = "network_timeseries"
+    if args.num_shards > 1:
+        if not 0 <= args.shard_index < args.num_shards:
+            raise SystemExit("--shard-index must be in [0, --num-shards)")
+        manifest = manifest.iloc[args.shard_index :: args.num_shards]
+        table = f"network_timeseries_shard{args.shard_index:03d}"
+    if args.limit:
+        manifest = manifest.head(args.limit)
+    cache = Path(args.cache) if args.cache else Path(args.out) / "cache"
+    TribeExtractor(cache_folder=cache, device=args.device).run(
+        manifest, args.out, overwrite=args.overwrite, table_name=table
     )
-    print(f"Wrote network time series to {args.out}")
+    print(f"Wrote {table} to {args.out}")
+
+
+def _merge(args) -> None:
+    from .tribe_runner import merge_shards
+
+    print(f"Wrote {merge_shards(args.out)}")
 
 
 def _train(args) -> None:
@@ -162,7 +177,16 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--out", default="work")
     e.add_argument("--device", default="auto")
     e.add_argument("--overwrite", action="store_true")
+    e.add_argument("--cache", default="", help="Feature cache dir (default <out>/cache)")
+    e.add_argument("--limit", type=int, default=0, help="Only the first N videos (pilot runs)")
+    e.add_argument("--shard-index", type=int, default=0)
+    e.add_argument("--num-shards", type=int, default=1,
+                   help="Split the manifest across machines; merge with merge-shards")
     e.set_defaults(func=_extract)
+
+    mg = sub.add_parser("merge-shards", help="Combine sharded extract outputs")
+    mg.add_argument("--out", default="work")
+    mg.set_defaults(func=_merge)
 
     t = sub.add_parser("train", help="Evaluate brain features vs baselines and fit models")
     t.add_argument("--manifest", required=True, help="CSV with video_id,creator_id[,duration_s,...]")

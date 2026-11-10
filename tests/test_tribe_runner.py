@@ -26,3 +26,14 @@ def test_run_skips_failures_and_caches(tmp_path):
     calls.clear()
     ext.run(manifest, tmp_path)  # second run: cached videos are not recomputed
     assert calls == ["bad"]
+
+
+def test_merge_shards(tmp_path):
+    from neuroengage.tribe_runner import merge_shards, save_table
+
+    for k in range(3):
+        df = pd.DataFrame({"video_id": f"v{k}", "t": range(4), "a": np.arange(4.0)})
+        save_table(df, tmp_path / f"network_timeseries_shard{k:03d}")
+    merged = load_table(merge_shards(tmp_path))
+    assert sorted(merged["video_id"].unique()) == ["v0", "v1", "v2"]
+    assert len(merged) == 12
