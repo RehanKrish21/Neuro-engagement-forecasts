@@ -87,3 +87,16 @@ def test_cli_prepare_and_train_scores(tmp_path):
           str(tmp_path / "ts.csv"), "--folds", "3", "--out", str(tmp_path / "run")])
     metrics = pd.read_csv(tmp_path / "run" / "video_level_metrics.csv")
     assert set(metrics["target"]) == {"nawp", "ecr"}
+
+
+def test_numeric_looking_ids_survive_csv_roundtrip(tmp_path):
+    manifest, ts = make_score_dataset(seed=7, n_creators=6, videos_per_creator=10)
+    ids = {v: f"{i:05d}" for i, v in enumerate(manifest["video_id"])}  # e.g. "00042"
+    manifest["video_id"] = manifest["video_id"].map(ids)
+    ts["video_id"] = ts["video_id"].map(ids)
+    manifest.to_csv(tmp_path / "m.csv", index=False)
+    ts.to_csv(tmp_path / "ts.csv", index=False)
+    main(["train-scores", "--manifest", str(tmp_path / "m.csv"), "--timeseries",
+          str(tmp_path / "ts.csv"), "--folds", "3", "--out", str(tmp_path / "run")])
+    info = pd.read_json(tmp_path / "run" / "run_info.json", typ="series")
+    assert info["n_videos"] == len(manifest)

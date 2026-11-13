@@ -154,7 +154,9 @@ def load_table(stem: str | Path) -> pd.DataFrame:
         candidates = [stem.with_suffix(".parquet"), stem.with_suffix(".csv")]
     for path in candidates:
         if path.exists():
-            return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+            if path.suffix == ".parquet":
+                return pd.read_parquet(path)
+            return pd.read_csv(path, dtype={"video_id": str})
     raise FileNotFoundError(f"No table at {stem} (.parquet or .csv)")
 
 

@@ -22,6 +22,11 @@ VIDEO_TARGETS = ("avg_retention", "hook_retention", "completion")
 POSITION_COLS = ["t_frac", "log_t"]
 
 
+def _str_ids(*frames: pd.DataFrame) -> list[pd.DataFrame]:
+    """IDs like 0012 or 12345 must not turn into integers when read from CSV."""
+    return [f.assign(video_id=f["video_id"].astype(str)) for f in frames]
+
+
 def build_tables(
     manifest: pd.DataFrame,
     long_ts: pd.DataFrame,
@@ -31,6 +36,7 @@ def build_tables(
 
     Returns ``(video_table, second_table, video_brain_cols, second_brain_cols)``.
     """
+    manifest, long_ts, retention_per_second = _str_ids(manifest, long_ts, retention_per_second)
     vf = video_features(long_ts)
     brain_cols = [c for c in vf.columns if "__" in c]
     vt = video_targets(retention_per_second)
@@ -205,6 +211,7 @@ def run_score_training(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    manifest, long_ts = _str_ids(manifest, long_ts)
     vf = video_features(long_ts, hook_seconds=hook_seconds)
     brain_cols = [c for c in vf.columns if "__" in c]
     dup = [c for c in vf.columns if c in manifest.columns and c != "video_id"]

@@ -58,7 +58,7 @@ def _snapugc_prepare(args) -> None:
 def _train_scores(args) -> None:
     from .pipeline import run_score_training
 
-    manifest = pd.read_csv(args.manifest)
+    manifest = pd.read_csv(args.manifest, dtype={"video_id": str})
     ts = load_table(args.timeseries)
     baseline = args.baseline_cols.split(",") if args.baseline_cols else None
     run_score_training(
@@ -75,7 +75,7 @@ def _train_scores(args) -> None:
 def _extract(args) -> None:
     from .tribe_runner import TribeExtractor
 
-    manifest = pd.read_csv(args.manifest)
+    manifest = pd.read_csv(args.manifest, dtype={"video_id": str})
     table = "network_timeseries"
     if args.num_shards > 1:
         if not 0 <= args.shard_index < args.num_shards:
@@ -100,9 +100,9 @@ def _merge(args) -> None:
 def _train(args) -> None:
     from .pipeline import run_training
 
-    manifest = pd.read_csv(args.manifest)
+    manifest = pd.read_csv(args.manifest, dtype={"video_id": str})
     ts = load_table(args.timeseries)
-    curves = pd.read_csv(args.retention)
+    curves = pd.read_csv(args.retention, dtype={"video_id": str})
     if "duration_s" in manifest:
         durations = manifest.set_index("video_id")["duration_s"]
     else:
@@ -118,7 +118,7 @@ def _score(args) -> None:
     models = joblib.load(args.models)
     ts = load_table(args.timeseries)
     vf = video_features(ts)
-    manifest = pd.read_csv(args.manifest) if args.manifest else vf[["video_id"]]
+    manifest = pd.read_csv(args.manifest, dtype={"video_id": str}) if args.manifest else vf[["video_id"]]
     video = manifest.merge(vf.drop(columns=["duration_s"]) if "duration_s" in manifest else vf,
                            on="video_id")
     m = models["avg_retention"]
