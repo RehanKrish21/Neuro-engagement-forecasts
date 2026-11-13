@@ -122,7 +122,7 @@ TRIBE v2 runs V-JEPA 2 (video), Wav2Vec-BERT (audio) and Llama 3.2-3B (text) for
 
 **Google Colab**: [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RehanKrish21/Neuro-engagement-forecasts/blob/main/notebooks/colab_snapugc.ipynb)
 
-The notebook installs everything, runs a one-video smoke test, downloads SnapUGC, and runs a stratified subset. Predictions are saved to Google Drive, so when Colab disconnects you just re-run the cell and it picks up where it stopped.
+The notebook installs everything, runs a one-video smoke test, downloads SnapUGC, and runs a stratified subset. By default everything stays on the Colab machine (no Google Drive access needed) and you download a results zip at the end. Set `USE_DRIVE = True` if you want runs to survive disconnects.
 
 **Modal** (`cloud/modal_app.py`): best for larger runs, because it splits the videos across several GPUs at once and you only pay while they run.
 
