@@ -37,3 +37,23 @@ def test_merge_shards(tmp_path):
     merged = load_table(merge_shards(tmp_path))
     assert sorted(merged["video_id"].unique()) == ["v0", "v1", "v2"]
     assert len(merged) == 12
+
+
+def test_failure_reports_root_cause(tmp_path):
+    import pytest
+
+    ext = TribeExtractor.__new__(TribeExtractor)
+    ext._masks = {"a": np.ones(4, bool)}
+
+    def fake_predict(vid, path):
+        try:
+            raise OSError("You are trying to access a gated repo")
+        except OSError as inner:
+            raise RuntimeError("Model loading went wrong") from inner
+
+    ext.predict = fake_predict
+    with pytest.raises(RuntimeError, match="gated repo") as info:
+        ext.run(pd.DataFrame({"video_id": ["v"], "path": ["x"]}), tmp_path)
+    assert isinstance(info.value.__cause__, RuntimeError)
+    err = pd.read_csv(tmp_path / "failures.csv")["error"].iloc[0]
+    assert "Model loading went wrong -> OSError: You are trying to access a gated repo" in err

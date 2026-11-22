@@ -99,6 +99,7 @@ class TribeExtractor:
         out_dir = Path(out_dir)
         (out_dir / "preds").mkdir(parents=True, exist_ok=True)
         frames, failures = [], []
+        last_exc: Exception | None = None
         total = len(manifest)
         for i, row in enumerate(manifest.itertuples(index=False), 1):
             vid = str(row.video_id)
@@ -113,18 +114,39 @@ class TribeExtractor:
             except Exception as exc:  # corrupt/silent/too-short videos
                 if not skip_errors:
                     raise
-                logger.warning("Skipping %s: %s", vid, exc)
-                failures.append({"video_id": vid, "error": repr(exc)})
+                chain = describe_exception(exc)
+                logger.warning("Skipping %s: %s", vid, chain)
+                failures.append({"video_id": vid, "error": chain})
+                last_exc = exc
                 continue
             frames.append(to_long(pred, self.masks))
         if failures:
             name = "failures.csv" if table_name == "network_timeseries" else f"failures_{table_name}.csv"
             pd.DataFrame(failures).to_csv(out_dir / name, index=False)
         if not frames:
-            raise RuntimeError("TRIBE v2 failed on every video; see failures.csv")
+            # Chain the last error so the notebook shows the original traceback.
+            raise RuntimeError(
+                f"TRIBE v2 failed on every video. Last error: "
+                f"{failures[-1]['error'] if failures else 'unknown'}"
+            ) from last_exc
         long = pd.concat(frames, ignore_index=True)
         save_table(long, out_dir / table_name)
         return long
+
+
+def describe_exception(exc: BaseException) -> str:
+    """``Outer -> ... -> root cause`` for wrapped errors.
+
+    TRIBE's feature extractors re-raise loading failures as a generic
+    "Model loading went wrong"; the useful message is the root cause.
+    """
+    parts, seen = [], set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parts.append(f"{type(cur).__name__}: {cur}".strip())
+        cur = cur.__cause__ or cur.__context__
+    return " -> ".join(parts)
 
 
 def to_long(pred: TribePrediction, masks: dict[str, np.ndarray]) -> pd.DataFrame:
