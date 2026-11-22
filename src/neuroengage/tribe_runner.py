@@ -33,14 +33,29 @@ class TribePrediction:
     video_id: str
     preds: np.ndarray
     times: np.ndarray
+    duration: float | None = None  # stimulus length in seconds, if known
+
+    def trimmed(self) -> "TribePrediction":
+        """Drop rows that start at or after the end of the stimulus.
+
+        TRIBE predicts in fixed-length windows (100 s by default); with
+        empty segments kept, the window's padding after the video ends comes
+        back as extra rows that describe no stimulus at all.
+        """
+        if self.duration is None:
+            return self
+        keep = self.times < self.duration - 1e-6
+        return TribePrediction(self.video_id, self.preds[keep], self.times[keep], self.duration)
 
     def save(self, path: str | Path) -> None:
-        np.savez_compressed(path, video_id=self.video_id, preds=self.preds, times=self.times)
+        extra = {} if self.duration is None else {"duration": self.duration}
+        np.savez_compressed(path, video_id=self.video_id, preds=self.preds, times=self.times, **extra)
 
     @classmethod
     def load(cls, path: str | Path) -> "TribePrediction":
         with np.load(path, allow_pickle=False) as data:
-            return cls(str(data["video_id"]), data["preds"], data["times"])
+            duration = float(data["duration"]) if "duration" in data.files else None
+            return cls(str(data["video_id"]), data["preds"], data["times"], duration).trimmed()
 
 
 class TribeExtractor:
@@ -102,8 +117,10 @@ class TribeExtractor:
         preds, segments = self.model.predict(events=events, verbose=False)
         times = np.array([float(s.start) for s in segments])
         order = np.argsort(times)
-        times = times[order] - times.min()
-        return TribePrediction(video_id, preds[order].astype(np.float32), times)
+        t0 = times.min()
+        duration = stimulus_duration(events, t0)
+        pred = TribePrediction(video_id, preds[order].astype(np.float32), times[order] - t0, duration)
+        return pred.trimmed()
 
     def run(
         self,
@@ -158,6 +175,17 @@ class TribeExtractor:
         long = pd.concat(frames, ignore_index=True)
         save_table(long, out_dir / table_name)
         return long
+
+
+def stimulus_duration(events: pd.DataFrame, t0: float = 0.0) -> float | None:
+    """End of the last event (video/audio/word) relative to ``t0``, in seconds."""
+    if not {"start", "duration"} <= set(events.columns):
+        return None
+    end = pd.to_numeric(events["start"], errors="coerce") + pd.to_numeric(
+        events["duration"], errors="coerce"
+    )
+    end = end.max()
+    return None if pd.isna(end) else float(end) - t0
 
 
 def needs_low_memory(threshold_gb: float = 30.0) -> bool:

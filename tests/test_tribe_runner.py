@@ -64,3 +64,35 @@ def test_needs_low_memory_threshold():
 
     assert needs_low_memory(threshold_gb=1e9) is True
     assert needs_low_memory(threshold_gb=0.0) is False
+
+
+class _Seg:
+    def __init__(self, start):
+        self.start = start
+
+
+class _FakeTribeModel:
+    """Mimics TRIBE: predicts a fixed 100 s window regardless of video length."""
+
+    def get_events_dataframe(self, video_path):
+        return pd.DataFrame({"type": ["Video", "Word"], "start": [0.0, 3.0], "duration": [52.3, 0.4]})
+
+    def predict(self, events, verbose=False):
+        return np.zeros((100, 8)), [_Seg(float(t)) for t in range(100)]
+
+
+def test_predict_trims_window_padding(tmp_path):
+    ext = TribeExtractor.__new__(TribeExtractor)
+    ext.model = _FakeTribeModel()
+    pred = ext.predict("v", "clip.mp4")
+    assert pred.preds.shape[0] == 53  # seconds 0..52 of a 52.3 s video
+    assert pred.times[-1] == 52.0 and pred.duration == 52.3
+    pred.save(tmp_path / "v.npz")
+    loaded = TribePrediction.load(tmp_path / "v.npz")
+    assert loaded.preds.shape[0] == 53 and loaded.duration == 52.3
+
+
+def test_load_trims_untrimmed_cache_with_duration(tmp_path):
+    raw = TribePrediction("v", np.zeros((100, 4)), np.arange(100.0), duration=10.0)
+    np.savez_compressed(tmp_path / "v.npz", video_id="v", preds=raw.preds, times=raw.times, duration=10.0)
+    assert TribePrediction.load(tmp_path / "v.npz").preds.shape[0] == 10
