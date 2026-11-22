@@ -38,7 +38,7 @@ image = (
     .pip_install("uv")
     .run_commands(
         "uv pip install --system 'tribev2[plotting] @ git+https://github.com/facebookresearch/tribev2.git'",
-        f"uv pip install --system 'neuroengage @ git+{REPO}' pyarrow gdown accelerate",
+        f"uv pip install --system 'neuroengage @ git+{REPO}' pyarrow gdown accelerate torchaudio==2.6.0",
         # TRIBE transcribes speech by shelling out to `uvx whisperx`; pre-install it into the image.
         "uvx whisperx --help > /dev/null || true",
     )
