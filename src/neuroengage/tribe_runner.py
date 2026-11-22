@@ -9,6 +9,7 @@ CC BY-NC 4.0. Everything downstream of this module works on the cached
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,7 +51,18 @@ class TribeExtractor:
         checkpoint: str = "facebook/tribev2",
         cache_folder: str | Path = "./cache/tribe",
         device: str = "auto",
+        low_memory: bool | None = None,
     ) -> None:
+        """Load TRIBE v2.
+
+        ``low_memory`` loads the Llama 3.2-3B text model in float16 straight onto
+        the GPU (TRIBE's ``device="accelerate"`` mode, needs the ``accelerate``
+        package) instead of float32 via CPU RAM: ~6.4 GB instead of ~13 GB, which
+        is what lets it run on a free Colab T4 (15 GB GPU, ~12 GB RAM). Text
+        features then differ slightly from TRIBE's float32 setup. ``None``
+        enables it automatically on GPUs or machines with less than 30 GB.
+        """
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         try:
             from tribev2 import TribeModel
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -58,8 +70,22 @@ class TribeExtractor:
                 "TRIBE v2 is not installed. See the README section "
                 "'Installing TRIBE v2'."
             ) from exc
+        if low_memory is None:
+            low_memory = needs_low_memory()
+        self.low_memory = low_memory
+        config_update = None
+        if low_memory:
+            try:
+                import accelerate  # noqa: F401
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise ImportError(
+                    "low_memory mode needs the 'accelerate' package: pip install accelerate"
+                ) from exc
+            config_update = {"data.text_feature.device": "accelerate"}
+            logger.info("TRIBE v2: low-memory mode (Llama 3.2 in float16 on GPU)")
         self.model = TribeModel.from_pretrained(
-            checkpoint, cache_folder=str(cache_folder), device=device
+            checkpoint, cache_folder=str(cache_folder), device=device,
+            config_update=config_update,
         )
         # Keep empty (silent/blank) seconds so rows stay on a regular grid.
         self.model.remove_empty_segments = False
@@ -132,6 +158,23 @@ class TribeExtractor:
         long = pd.concat(frames, ignore_index=True)
         save_table(long, out_dir / table_name)
         return long
+
+
+def needs_low_memory(threshold_gb: float = 30.0) -> bool:
+    """True when the GPU or system RAM is too small for TRIBE's float32 Llama."""
+    try:
+        ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
+    except (ValueError, OSError, AttributeError):
+        ram_gb = float("inf")
+    gpu_gb = float("inf")
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    except Exception:  # pragma: no cover - torch missing or broken
+        pass
+    return min(ram_gb, gpu_gb) < threshold_gb
 
 
 def describe_exception(exc: BaseException) -> str:

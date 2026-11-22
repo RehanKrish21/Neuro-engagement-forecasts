@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=7"]
 parquet = ["pyarrow>=14"]
+tribe = ["accelerate>=1.0"]
 
 [project.scripts]
 neuroengage = "neuroengage.cli:main"

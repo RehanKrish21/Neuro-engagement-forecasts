@@ -57,3 +57,10 @@ def test_failure_reports_root_cause(tmp_path):
     assert isinstance(info.value.__cause__, RuntimeError)
     err = pd.read_csv(tmp_path / "failures.csv")["error"].iloc[0]
     assert "Model loading went wrong -> OSError: You are trying to access a gated repo" in err
+
+
+def test_needs_low_memory_threshold():
+    from neuroengage.tribe_runner import needs_low_memory
+
+    assert needs_low_memory(threshold_gb=1e9) is True
+    assert needs_low_memory(threshold_gb=0.0) is False
