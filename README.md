@@ -124,6 +124,10 @@ TRIBE v2 runs V-JEPA 2 (video), Wav2Vec-BERT (audio) and Llama 3.2-3B (text) for
 
 The notebook installs everything, runs a one-video smoke test, downloads SnapUGC, and runs a stratified subset. By default everything stays on the Colab machine (no Google Drive access needed) and you download a results zip at the end. Set `USE_DRIVE = True` if you want runs to survive disconnects.
 
+**Kaggle** (free, ~29 GB RAM, ~30 GPU h/week, can run in the background for up to 12 h): [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/RehanKrish21/Neuro-engagement-forecasts/blob/main/notebooks/kaggle_snapugc.ipynb)
+
+Or in Kaggle: *Create → New Notebook → File → Import Notebook → GitHub* and paste `notebooks/kaggle_snapugc.ipynb`'s URL. In the notebook settings, turn on GPU and Internet and add `HF_TOKEN` as a secret. For the full run, use *Save Version → Save & Run All*: it runs with the browser closed and stops itself before the 12 h limit.
+
 **Modal** (`cloud/modal_app.py`): best for larger runs, because it splits the videos across several GPUs at once and you only pay while they run.
 
 ```bash
@@ -177,6 +181,7 @@ src/neuroengage/
   synthetic.py      planted-signal and null synthetic data for demos/tests
   cli.py            neuroengage {demo, extract, merge-shards, train, train-scores, snapugc-prepare, score}
 notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
+notebooks/kaggle_snapugc.ipynb  Kaggle: same, plus background 'Save & Run All' runs
 cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
 tests/              24 tests, including signal-recovery and null-control checks
 ```
