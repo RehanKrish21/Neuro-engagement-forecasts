@@ -96,3 +96,27 @@ def test_load_trims_untrimmed_cache_with_duration(tmp_path):
     raw = TribePrediction("v", np.zeros((100, 4)), np.arange(100.0), duration=10.0)
     np.savez_compressed(tmp_path / "v.npz", video_id="v", preds=raw.preds, times=raw.times, duration=10.0)
     assert TribePrediction.load(tmp_path / "v.npz").preds.shape[0] == 10
+
+
+def test_nonfinite_predictions_fail_and_deadline_defers(tmp_path):
+    class NaNModel(_FakeTribeModel):
+        def predict(self, events, verbose=False):
+            out = np.zeros((100, 8))
+            out[3, 2] = np.nan
+            return out, [_Seg(float(t)) for t in range(100)]
+
+    import pytest
+
+    ext = TribeExtractor.__new__(TribeExtractor)
+    ext.model = NaNModel()
+    with pytest.raises(FloatingPointError):
+        ext.predict("v", "clip.mp4")
+
+    ext = TribeExtractor.__new__(TribeExtractor)
+    ext._masks = {"a": np.ones(8, bool)}
+    ext.model = _FakeTribeModel()
+    manifest = pd.DataFrame({"video_id": ["a", "b", "c"], "path": ["x", "y", "z"]})
+    ext.run(manifest.head(1), tmp_path)                       # "a" gets cached
+    long = ext.run(manifest, tmp_path, deadline=0.0)          # past deadline: only cached "a"
+    assert set(long["video_id"]) == {"a"}
+    assert not (tmp_path / "failures.csv").exists()           # deferred is not a failure

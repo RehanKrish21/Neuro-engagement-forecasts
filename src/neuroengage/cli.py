@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import time
 from pathlib import Path
 
 import joblib
@@ -96,8 +97,9 @@ def _extract(args) -> None:
     if args.limit:
         manifest = manifest.head(args.limit)
     cache = Path(args.cache) if args.cache else Path(args.out) / "cache"
-    TribeExtractor(cache_folder=cache, device=args.device).run(
-        manifest, args.out, overwrite=args.overwrite, table_name=table
+    deadline = time.time() + args.max_hours * 3600 if args.max_hours else None
+    TribeExtractor(cache_folder=cache, device=args.device, precision=args.precision).run(
+        manifest, args.out, overwrite=args.overwrite, table_name=table, deadline=deadline
     )
     print(f"Wrote {table} to {args.out}")
 
@@ -204,6 +206,10 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--shard-index", type=int, default=0)
     e.add_argument("--num-shards", type=int, default=1,
                    help="Split the manifest across machines; merge with merge-shards")
+    e.add_argument("--precision", choices=["fp32", "fp16"], default="fp32",
+                   help="fp16 is much faster on T4-class GPUs; check agreement with fp32 first")
+    e.add_argument("--max-hours", type=float, default=0,
+                   help="Stop starting new videos after this many hours (0 = no limit)")
     e.set_defaults(func=_extract)
 
     mg = sub.add_parser("merge-shards", help="Combine sharded extract outputs")

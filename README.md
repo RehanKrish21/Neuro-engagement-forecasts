@@ -54,7 +54,7 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 24 tests
+pytest -q                                 # 35 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
 neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
@@ -142,6 +142,10 @@ modal run cloud/modal_app.py --labels <csv> --videos-dir <dir> --n 3000 --shards
 modal volume get neuroengage-data /runs/snapugc_n3000_seed0/results ./results
 ```
 
+**Speed.** On a T4 almost all the time goes to the V-JEPA 2 video model (~30 GPU-seconds per second of video in float32, i.e. ~5–6 min for a typical 10 s clip). Two things help:
+- `neuroengage.parallel.run_extract_on_gpus` (used by the Kaggle notebook) runs one worker per GPU, so Kaggle's *T4 x2* processes two videos at once.
+- `--precision fp16` (or `TribeExtractor(precision="fp16")`) runs feature extraction under float16 autocast, much faster on T4s. Large models can drift or overflow in float16, so the Kaggle notebook first compares fp16 with fp32 on two videos and only switches if every network agrees at r ≥ 0.98. Videos with non-finite predictions fail instead of being saved.
+
 Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --shard-index K --num-shards N` on each machine, then `neuroengage merge-shards`.
 
 ## What would count as a real result
@@ -180,12 +184,13 @@ src/neuroengage/
   modeling.py       grouped CV, creator normalization, feature-set comparison
   pipeline.py       end-to-end train/evaluate → report.md + figure + models
   snapugc.py        SnapUGC label loader + stratified subsampling → manifest
+  parallel.py       one extraction worker per GPU, progress/ETA, merge
   synthetic.py      planted-signal and null synthetic data for demos/tests
   cli.py            neuroengage {demo, extract, merge-shards, train, train-scores, snapugc-prepare, score}
 notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
 notebooks/kaggle_snapugc.ipynb  Kaggle: same, plus background 'Save & Run All' runs
 cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
-tests/              24 tests, including signal-recovery and null-control checks
+tests/              35 tests, including signal-recovery and null-control checks
 ```
 
 ## References

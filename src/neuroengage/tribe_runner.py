@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,6 +68,8 @@ class TribeExtractor:
         cache_folder: str | Path = "./cache/tribe",
         device: str = "auto",
         low_memory: bool | None = None,
+        precision: str = "fp32",
+        num_workers: int | None = None,
     ) -> None:
         """Load TRIBE v2.
 
@@ -76,7 +79,20 @@ class TribeExtractor:
         is what lets it run on a free Colab T4 (15 GB GPU, ~12 GB RAM). Text
         features then differ slightly from TRIBE's float32 setup. ``None``
         enables it automatically on GPUs or machines with less than 30 GB.
+
+        ``precision="fp16"`` runs feature extraction and TRIBE under CUDA
+        autocast (float16). On T4-class GPUs this is much faster for the V-JEPA 2
+        video model, which dominates run time, but features differ slightly from
+        TRIBE's float32 setup and large models can overflow in float16: a video
+        whose predictions come out non-finite fails instead of being saved. Use a
+        separate ``cache_folder`` per precision, since TRIBE's feature cache does
+        not record it. Check agreement with float32 on a few videos first.
+
+        ``num_workers`` sets TRIBE's data-loader processes (default: up to 4).
         """
+        if precision not in ("fp32", "fp16"):
+            raise ValueError("precision must be 'fp32' or 'fp16'")
+        self.precision = precision
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         try:
             from tribev2 import TribeModel
@@ -88,7 +104,7 @@ class TribeExtractor:
         if low_memory is None:
             low_memory = needs_low_memory()
         self.low_memory = low_memory
-        config_update = None
+        config_update: dict = {"data.num_workers": num_workers or min(4, os.cpu_count() or 1)}
         if low_memory:
             try:
                 import accelerate  # noqa: F401
@@ -96,7 +112,7 @@ class TribeExtractor:
                 raise ImportError(
                     "low_memory mode needs the 'accelerate' package: pip install accelerate"
                 ) from exc
-            config_update = {"data.text_feature.device": "accelerate"}
+            config_update["data.text_feature.device"] = "accelerate"
             logger.info("TRIBE v2: low-memory mode (Llama 3.2 in float16 on GPU)")
         self.model = TribeModel.from_pretrained(
             checkpoint, cache_folder=str(cache_folder), device=device,
@@ -113,13 +129,28 @@ class TribeExtractor:
         return self._masks
 
     def predict(self, video_id: str, video_path: str | Path) -> TribePrediction:
-        events = self.model.get_events_dataframe(video_path=str(video_path))
-        preds, segments = self.model.predict(events=events, verbose=False)
+        import contextlib
+
+        precision = getattr(self, "precision", "fp32")
+        autocast = contextlib.nullcontext()
+        if precision == "fp16":
+            import torch
+
+            if torch.cuda.is_available():
+                autocast = torch.autocast("cuda", dtype=torch.float16)
+        with autocast:
+            events = self.model.get_events_dataframe(video_path=str(video_path))
+            preds, segments = self.model.predict(events=events, verbose=False)
+        preds = np.asarray(preds, dtype=np.float32)
+        if not np.isfinite(preds).all():
+            raise FloatingPointError(
+                f"non-finite predictions ({precision}); use precision='fp32' for this video"
+            )
         times = np.array([float(s.start) for s in segments])
         order = np.argsort(times)
         t0 = times.min()
         duration = stimulus_duration(events, t0)
-        pred = TribePrediction(video_id, preds[order].astype(np.float32), times[order] - t0, duration)
+        pred = TribePrediction(video_id, preds[order], times[order] - t0, duration)
         return pred.trimmed()
 
     def run(
@@ -129,11 +160,14 @@ class TribeExtractor:
         overwrite: bool = False,
         skip_errors: bool = True,
         table_name: str = "network_timeseries",
+        deadline: float | None = None,
     ) -> pd.DataFrame:
         """Extract every video in ``manifest`` (columns ``video_id``, ``path``).
 
         Re-running resumes: videos with a cached ``.npz`` are not recomputed.
-        Videos that fail are logged to ``failures.csv`` and skipped.
+        Videos that fail are logged to ``failures.csv`` and skipped. With a
+        ``deadline`` (``time.time()`` value), no new video is started after it;
+        already-cached videos are still included.
 
         Writes ``<out_dir>/preds/<video_id>.npz`` (full vertex predictions) and
         returns the long-format network time series, also saved as
@@ -144,12 +178,16 @@ class TribeExtractor:
         frames, failures = [], []
         last_exc: Exception | None = None
         total = len(manifest)
+        deferred = 0
         for i, row in enumerate(manifest.itertuples(index=False), 1):
             vid = str(row.video_id)
             cache = out_dir / "preds" / f"{vid}.npz"
             try:
                 if cache.exists() and not overwrite:
                     pred = TribePrediction.load(cache)
+                elif deadline is not None and time.time() > deadline:
+                    deferred += 1
+                    continue
                 else:
                     logger.info("TRIBE v2 [%d/%d]: %s", i, total, vid)
                     pred = self.predict(vid, row.path)
@@ -163,6 +201,8 @@ class TribeExtractor:
                 last_exc = exc
                 continue
             frames.append(to_long(pred, self.masks))
+        if deferred:
+            logger.warning("Time budget reached: %d videos not started (re-run to continue)", deferred)
         if failures:
             name = "failures.csv" if table_name == "network_timeseries" else f"failures_{table_name}.csv"
             pd.DataFrame(failures).to_csv(out_dir / name, index=False)
