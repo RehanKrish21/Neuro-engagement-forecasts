@@ -1,4 +1,4 @@
-"""Command line: ``neuroengage {demo,extract,merge-shards,train,train-scores,snapugc-prepare,score}``."""
+"""Command line: ``neuroengage {demo,extract,merge-shards,train,train-scores,snapugc-download,snapugc-prepare,score}``."""
 
 from __future__ import annotations
 
@@ -53,6 +53,17 @@ def _snapugc_prepare(args) -> None:
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     manifest.to_csv(args.out, index=False)
     print(f"Wrote {len(manifest)} videos to {args.out}")
+
+
+def _snapugc_download(args) -> None:
+    from .snapugc import download_videos, load_labels, sample_candidates
+
+    labels = load_labels(args.labels, id_col=args.id_col or None)
+    candidates = sample_candidates(labels, int(args.n * args.oversample), seed=args.seed)
+    log = download_videos(candidates, args.videos_dir, workers=args.workers)
+    print(log["status"].value_counts().to_string())
+    ok = log["status"].isin(["ok", "exists"]).sum()
+    print(f"{ok}/{len(log)} videos available in {args.videos_dir}")
 
 
 def _train_scores(args) -> None:
@@ -157,10 +168,21 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--out", default="work/snapugc_manifest.csv")
     sp.set_defaults(func=_snapugc_prepare)
 
+    sd = sub.add_parser("snapugc-download", help="Download a stratified sample of SnapUGC videos")
+    sd.add_argument("--labels", required=True, help="SnapUGC label CSV with a Download_link column")
+    sd.add_argument("--videos-dir", required=True)
+    sd.add_argument("--n", type=int, required=True, help="Videos you want in the final run")
+    sd.add_argument("--oversample", type=float, default=1.3, help="Extra candidates for dead links")
+    sd.add_argument("--workers", type=int, default=8)
+    sd.add_argument("--seed", type=int, default=0)
+    sd.add_argument("--id-col", default="")
+    sd.set_defaults(func=_snapugc_download)
+
     ts_ = sub.add_parser("train-scores", help="Evaluate brain features vs baselines on per-video scores")
     ts_.add_argument("--manifest", required=True, help="CSV with video_id, targets, baseline cols")
     ts_.add_argument("--timeseries", default="work/network_timeseries")
-    ts_.add_argument("--targets", default="nawp,ecr", help="Comma-separated target columns")
+    ts_.add_argument("--targets", default="nawp,ecr",
+                     help="Comma-separated target columns (missing ones are skipped)")
     ts_.add_argument("--baseline-cols", default="duration_s", help="Comma-separated columns")
     ts_.add_argument("--group-col", default="", help="e.g. creator_id; empty = shuffled K-fold")
     ts_.add_argument("--normalize-within-group", action="store_true")

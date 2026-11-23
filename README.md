@@ -91,17 +91,19 @@ A few hundred videos across several creators is the minimum for the video-level 
 
 ## Public benchmark: SnapUGC
 
-[SnapUGC](https://github.com/dasongli1/SnapUGC_Engagement) (Li et al., ECCV 2024) is the largest public short-video engagement dataset: about 90–120k Snapchat Spotlight videos (5–60 s, each with more than 2,000 views). Each video has two labels:
+[SnapUGC](https://github.com/dasongli1/SnapUGC_Engagement) (Li et al., ECCV 2024) is the largest public short-video engagement dataset: Snapchat Spotlight videos (5–60 s, each with more than 2,000 views). Its download is a **label file**, not a video archive: `train_data.csv` has 106,192 rows with `Id, Title, Description, Download_link, ECR`. The videos are fetched from each row's `Download_link`, so you only download the ones you need. Labels:
 
-- **NAWP** (normalized average watch percentage): how much of the video people watch, normalized across lengths.
-- **ECR** (engagement continuation rate): the share of viewers who stay at least **5 seconds**. In other words, a hook score.
+- **ECR** (engagement continuation rate): the share of viewers who stay at least **5 seconds**. In other words, a hook score. This is the target in the train file.
+- **NAWP** (normalized average watch percentage): how much of the video people watch. Described in the paper but absent from `train_data.csv`; it is used automatically when a label file has it.
 
-It has no per-second retention curves or creator IDs. Use `train-scores`, which evaluates per-video targets with shuffled K-fold. The default hook window is set to 5 s to match ECR.
+There are no per-second retention curves or creator IDs, so use `train-scores`, which evaluates per-video targets with shuffled K-fold. The default hook window is 5 s to match ECR.
 
 ```bash
-# 1. Download the train/val sets via dataset/readme.md in the SnapUGC repo, then:
-neuroengage snapugc-prepare --labels snapugc/train.csv --videos-dir snapugc/train_videos \
-    --n 3000 --out work/snapugc_manifest.csv      # stratified subsample across NAWP
+# 1. Get train_data.csv via dataset/readme.md in the SnapUGC repo, then download a stratified sample
+#    (30% extra for dead links; resumable; failures logged in _download_log.csv):
+neuroengage snapugc-download --labels train_data.csv --videos-dir snapugc/videos --n 3000
+neuroengage snapugc-prepare --labels train_data.csv --videos-dir snapugc/videos \
+    --n 3000 --out work/snapugc_manifest.csv
 # 2. Run TRIBE v2 (GPU). Resumable: re-running skips finished videos; failures go to failures.csv
 neuroengage extract --manifest work/snapugc_manifest.csv --out work/snapugc
 # 3. Compare baseline vs brain vs both
@@ -134,7 +136,7 @@ Or in Kaggle: *Create → New Notebook → File → Import Notebook → GitHub* 
 pip install modal && modal setup
 modal secret create huggingface HF_TOKEN=hf_xxx        # token with Llama 3.2 access
 modal volume create neuroengage-data
-modal run cloud/modal_app.py::download --split train  # SnapUGC → volume; prints label CSV + video folder
+modal run cloud/modal_app.py::download --split train --n 3000  # labels + sampled videos → volume
 modal run cloud/modal_app.py --labels <csv> --videos-dir <dir> --n 50 --shards 1    # pilot
 modal run cloud/modal_app.py --labels <csv> --videos-dir <dir> --n 3000 --shards 8  # 8 GPUs in parallel
 modal volume get neuroengage-data /runs/snapugc_n3000_seed0/results ./results
@@ -159,7 +161,7 @@ Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --sh
 
 ## Roadmap
 
-- [x] SnapUGC support (per-video NAWP / ECR targets)
+- [x] SnapUGC support (label file + sampled video download; ECR / NAWP targets)
 - [ ] Run TRIBE v2 on a SnapUGC subset and publish the real comparison
 - [ ] Run on a real channel's back catalogue with YouTube Analytics retention curves
 - [ ] Add raw-embedding baselines (V-JEPA 2, Wav2Vec-BERT, Llama 3.2) as a built-in feature set

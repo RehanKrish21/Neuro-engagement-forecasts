@@ -100,3 +100,70 @@ def test_numeric_looking_ids_survive_csv_roundtrip(tmp_path):
           str(tmp_path / "ts.csv"), "--folds", "3", "--out", str(tmp_path / "run")])
     info = pd.read_json(tmp_path / "run" / "run_info.json", typ="series")
     assert info["n_videos"] == len(manifest)
+
+
+def _serve(directory, monkeypatch):
+    import functools
+    import http.server
+    import threading
+
+    for var in ("no_proxy", "NO_PROXY"):
+        monkeypatch.setenv(var, "127.0.0.1,localhost")
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
+    handler.log_message = lambda *a, **k: None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_download_videos_validates_resumes_and_logs(tmp_path, monkeypatch):
+    from neuroengage.snapugc import download_videos, sample_candidates
+
+    src = tmp_path / "cdn"
+    src.mkdir()
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2000
+    for name in ("a", "b", "c"):
+        (src / f"{name}.bin").write_bytes(mp4)
+    (src / "html.bin").write_bytes(b"<html>expired</html>")
+    server, base = _serve(src, monkeypatch)
+    try:
+        labels = pd.DataFrame({
+            "video_id": ["a", "b", "c", "gone", "page", "nourl"],
+            "ecr": [0.1, 0.5, 0.9, 0.3, 0.7, 0.2],
+            "url": [f"{base}/a.bin", f"{base}/b.bin", f"{base}/c.bin", f"{base}/missing.bin",
+                    f"{base}/html.bin", None],
+        })
+        cand = sample_candidates(labels, n=10)
+        assert "nourl" not in set(cand["video_id"])
+        out = tmp_path / "videos"
+        log = download_videos(cand, out, workers=3, retries=0).set_index("video_id")["status"]
+        assert log[["a", "b", "c"]].tolist() == ["ok", "ok", "ok"]
+        assert log["gone"] == "http_404" and log["page"] == "not_mp4"
+        assert sorted(p.name for p in out.glob("*.mp4")) == ["a.mp4", "b.mp4", "c.mp4"]
+        assert not list(out.glob("*.part"))
+        again = download_videos(cand, out, workers=3, retries=0).set_index("video_id")["status"]
+        assert again[["a", "b", "c"]].tolist() == ["exists"] * 3
+        assert len(pd.read_csv(out / "_download_log.csv")) == 10
+    finally:
+        server.shutdown()
+
+
+def test_ecr_only_labels_flow(tmp_path):
+    """The real train_data.csv has ECR but no NAWP."""
+    from neuroengage.snapugc import available_targets
+
+    manifest, ts = make_score_dataset(seed=8, n_creators=8, videos_per_creator=10)
+    csv = tmp_path / "train_data.csv"
+    manifest.drop(columns=["nawp"]).rename(columns={"video_id": "Id", "ecr": "ECR"}).assign(
+        Title="t", Description="", Download_link="https://example.invalid/x"
+    ).to_csv(csv, index=False)
+    labels = load_labels(csv)
+    assert available_targets(labels) == ["ecr"] and "url" in labels
+    vids = tmp_path / "v"
+    vids.mkdir()
+    for v in labels["video_id"]:
+        (vids / f"{v}.mp4").write_bytes(b"")
+    m = build_manifest(labels, vids, n=60)
+    assert len(m) == 60
+    res = run_score_training(m, ts, ["nawp", "ecr"], tmp_path / "run", hook_seconds=5)
+    assert set(res["video"]["target"]) == {"ecr"}

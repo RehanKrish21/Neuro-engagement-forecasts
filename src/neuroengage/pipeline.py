@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import joblib
@@ -17,6 +18,8 @@ from .modeling import (
     fit_final,
 )
 from .retention import dropoff_targets, video_targets
+
+logger = logging.getLogger(__name__)
 
 VIDEO_TARGETS = ("avg_retention", "hook_retention", "completion")
 POSITION_COLS = ["t_frac", "log_t"]
@@ -218,9 +221,12 @@ def run_score_training(
     video = manifest.merge(vf.drop(columns=dup), on="video_id")
     if video.empty:
         raise ValueError("No overlap between manifest video_ids and the time series")
-    missing_t = [t for t in targets if t not in video]
+    missing_t = [t for t in targets if t not in video or video[t].isna().all()]
     if missing_t:
-        raise KeyError(f"Targets not in manifest: {missing_t}")
+        logger.warning("Skipping targets not in the data: %s", missing_t)
+        targets = [t for t in targets if t not in missing_t]
+    if not targets:
+        raise KeyError(f"None of the targets are in the manifest; columns: {list(manifest.columns)}")
     baseline_cols = [c for c in (baseline_cols or ["duration_s"]) if c in video.columns]
     if not baseline_cols:
         raise ValueError("No baseline columns found")

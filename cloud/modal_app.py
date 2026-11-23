@@ -7,9 +7,10 @@ One-time setup (on your machine):
     modal secret create huggingface HF_TOKEN=hf_xxx   # token with Llama 3.2 access
     modal volume create neuroengage-data
 
-Get the data into the volume (prints the label CSV and video folder it finds):
+Get the labels and a stratified sample of videos into the volume (prints the
+--labels / --videos-dir to use next):
 
-    modal run cloud/modal_app.py::download --split train
+    modal run cloud/modal_app.py::download --split train --n 3000
 
 Pilot (50 videos, 1 GPU), then the real run, with the paths printed above:
 
@@ -53,30 +54,30 @@ hf_secret = modal.Secret.from_name("huggingface")
 SNAPUGC_FILE_IDS = {"train": "1Mv5Esq5gGuxRTayabRUb5NmHwEN3JdbD", "val": "1iY7qUfqivYzUqUID501dKQDpI3NQil7y"}
 
 
-@app.function(volumes={"/data": volume}, timeout=6 * 60 * 60, ephemeral_disk=800 * 1024)
-def download(split: str = "train") -> None:
-    """Fetch a SnapUGC split from Google Drive straight into the volume and unpack it."""
-    import glob
-    import os
-    import shutil
-    from collections import Counter
+@app.function(volumes={"/data": volume}, timeout=6 * 60 * 60)
+def download(split: str = "train", n: int = 300, seed: int = 0, oversample: float = 1.3) -> None:
+    """Fetch a SnapUGC label CSV and a stratified sample of its videos into the volume.
+
+    SnapUGC's Drive links are label files (Id, Title, Description, Download_link,
+    ECR); videos come from each row's Download_link. Re-running resumes.
+    """
     from pathlib import Path
 
     import gdown
+    from neuroengage.snapugc import available_targets, download_videos, load_labels, sample_candidates
 
     dest = Path(f"/data/snapugc/{split}")
     dest.mkdir(parents=True, exist_ok=True)
-    if not any(dest.rglob("*.mp4")):
-        tmp = Path("/tmp/dl")
-        tmp.mkdir(exist_ok=True)
-        archive = gdown.download(id=SNAPUGC_FILE_IDS[split], output=f"{tmp}/", quiet=False)
-        shutil.unpack_archive(archive, str(dest))
-        volume.commit()
-    csvs = sorted(glob.glob(f"{dest}/**/*.csv", recursive=True))
-    dirs = Counter(os.path.dirname(p) for p in glob.glob(f"{dest}/**/*.mp4", recursive=True))
-    print("label files:", csvs)
-    print("video folders:", dirs.most_common(3))
-    print("Pass these as --labels and --videos-dir to `modal run cloud/modal_app.py`.")
+    found = sorted(dest.glob("*.csv"))
+    labels_csv = found[0] if found else Path(
+        gdown.download(id=SNAPUGC_FILE_IDS[split], output=f"{dest}/", quiet=False)
+    )
+    labels = load_labels(labels_csv)
+    print(f"{len(labels):,} labelled videos; targets: {available_targets(labels)}")
+    log = download_videos(sample_candidates(labels, int(n * oversample), seed=seed), dest / "videos")
+    volume.commit()
+    print(log["status"].value_counts().to_string())
+    print(f"--labels {labels_csv} --videos-dir {dest / 'videos'}")
 
 
 @app.function(volumes={"/data": volume}, timeout=60 * 60)
