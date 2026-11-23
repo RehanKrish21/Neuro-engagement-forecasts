@@ -128,7 +128,7 @@ The notebook installs everything, runs a one-video smoke test, downloads SnapUGC
 
 **Kaggle** (free, ~29 GB RAM, ~30 GPU h/week, can run in the background for up to 12 h): [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/RehanKrish21/Neuro-engagement-forecasts/blob/main/notebooks/kaggle_snapugc.ipynb)
 
-Or in Kaggle: *Create → New Notebook → File → Import Notebook → GitHub* and paste `notebooks/kaggle_snapugc.ipynb`'s URL. In the notebook settings, turn on GPU and Internet and add `HF_TOKEN` as a secret. For the full run, use *Save Version → Save & Run All*: it runs with the browser closed and stops itself before the 12 h limit.
+Or in Kaggle: *Create → New Notebook → File → Import Notebook → GitHub* and paste `notebooks/kaggle_snapugc.ipynb`'s URL. In the notebook settings, turn on GPU (T4 x2) and Internet and add `HF_TOKEN` as a secret. For the full run, use *Save Version → Save & Run All*: it runs with the browser closed, uses both GPUs, and stops itself before the 12 h limit. Every TRIBE/torch step runs as a separate `neuroengage` command, so the notebook never needs a restart.
 
 **Modal** (`cloud/modal_app.py`): best for larger runs, because it splits the videos across several GPUs at once and you only pay while they run.
 
