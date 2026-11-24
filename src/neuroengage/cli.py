@@ -86,6 +86,16 @@ def _exploratory(spec: str) -> set[str] | None:
     return {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
 
 
+def _raw(preds_dir: str, manifest: pd.DataFrame):
+    if not preds_dir:
+        return None
+    from .tribe_runner import raw_feature_table
+
+    table = raw_feature_table(preds_dir, ids=set(manifest["video_id"].astype(str)))
+    print(f"Raw features found for {len(table)} videos")
+    return table
+
+
 def _train_scores(args) -> None:
     from .pipeline import run_score_training
 
@@ -100,6 +110,7 @@ def _train_scores(args) -> None:
         hook_seconds=args.hook_seconds,
         n_splits=args.folds, seed=args.seed, title=args.title, n_boot=args.n_boot,
         exploratory_ids=_exploratory(args.exploratory_ids),
+        raw_features=_raw(args.raw_from, manifest),
     )
     print(f"Wrote {args.out}/report.md")
 
@@ -216,6 +227,8 @@ def main(argv: list[str] | None = None) -> None:
     ts_.add_argument("--seed", type=int, default=0)
     ts_.add_argument("--title", default="Results")
     ts_.add_argument("--n-boot", type=int, default=2000, help="Bootstrap resamples for 95%% CIs")
+    ts_.add_argument("--raw-from", default="",
+                     help="preds/ folder: add the raw-feature baseline (TRIBE's own inputs)")
     ts_.add_argument("--exploratory-ids", default="",
                      help="'snapugc-run1' or a file of IDs used to choose the analysis; "
                           "adds a confirmatory test on the other videos")

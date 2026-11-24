@@ -35,6 +35,7 @@ class TribePrediction:
     preds: np.ndarray
     times: np.ndarray
     duration: float | None = None  # stimulus length in seconds, if known
+    raw: dict[str, np.ndarray] | None = None  # summaries of TRIBE's input features (see summarize_raw)
 
     def trimmed(self) -> "TribePrediction":
         """Drop rows that start at or after the end of the stimulus.
@@ -46,17 +47,21 @@ class TribePrediction:
         if self.duration is None:
             return self
         keep = self.times < self.duration - 1e-6
-        return TribePrediction(self.video_id, self.preds[keep], self.times[keep], self.duration)
+        return TribePrediction(self.video_id, self.preds[keep], self.times[keep], self.duration, self.raw)
 
     def save(self, path: str | Path) -> None:
         extra = {} if self.duration is None else {"duration": self.duration}
+        extra.update({f"raw__{k}": v for k, v in (self.raw or {}).items()})
         np.savez_compressed(path, video_id=self.video_id, preds=self.preds, times=self.times, **extra)
 
     @classmethod
-    def load(cls, path: str | Path) -> "TribePrediction":
+    def load(cls, path: str | Path, with_preds: bool = True) -> "TribePrediction":
         with np.load(path, allow_pickle=False) as data:
             duration = float(data["duration"]) if "duration" in data.files else None
-            return cls(str(data["video_id"]), data["preds"], data["times"], duration).trimmed()
+            raw = {k[5:]: data[k] for k in data.files if k.startswith("raw__")} or None
+            preds = data["preds"] if with_preds else np.zeros((0, 0), np.float32)
+            times = data["times"] if with_preds else np.zeros(0)
+            return cls(str(data["video_id"]), preds, times, duration, raw).trimmed()
 
 
 class TribeExtractor:
@@ -70,6 +75,7 @@ class TribeExtractor:
         low_memory: bool | None = None,
         precision: str = "fp32",
         num_workers: int | None = None,
+        save_raw: bool = True,
     ) -> None:
         """Load TRIBE v2.
 
@@ -89,10 +95,15 @@ class TribeExtractor:
         not record it. Check agreement with float32 on a few videos first.
 
         ``num_workers`` sets TRIBE's data-loader processes (default: up to 4).
+
+        ``save_raw`` also stores summaries of TRIBE's own input features (see
+        :func:`summarize_raw`) with each prediction, for the raw-feature
+        baseline. It costs no extra GPU time.
         """
         if precision not in ("fp32", "fp16"):
             raise ValueError("precision must be 'fp32' or 'fp16'")
         self.precision = precision
+        self.save_raw = save_raw
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         try:
             from tribev2 import TribeModel
@@ -138,9 +149,27 @@ class TribeExtractor:
 
             if torch.cuda.is_available():
                 autocast = torch.autocast("cuda", dtype=torch.float16)
-        with autocast:
-            events = self.model.get_events_dataframe(video_path=str(video_path))
-            preds, segments = self.model.predict(events=events, verbose=False)
+        # Record the per-modality features TRIBE feeds its brain-prediction layers
+        # (V-JEPA 2 video, Wav2Vec-BERT audio, Llama 3.2 text) for the raw-feature baseline.
+        captured: list = []
+        encoder = getattr(self.model, "_model", None)
+        handle = None
+        if getattr(self, "save_raw", True) and hasattr(encoder, "register_forward_pre_hook"):
+            modalities = list(getattr(encoder, "feature_dims", {}) or {})
+
+            def grab(module, args):
+                batch = args[0]
+                data = {m: _to_numpy(batch.data[m]) for m in modalities if m in batch.data}
+                captured.append((data, list(getattr(batch, "segments", []))))
+
+            handle = encoder.register_forward_pre_hook(grab)
+        try:
+            with autocast:
+                events = self.model.get_events_dataframe(video_path=str(video_path))
+                preds, segments = self.model.predict(events=events, verbose=False)
+        finally:
+            if handle is not None:
+                handle.remove()
         preds = np.asarray(preds, dtype=np.float32)
         if not np.isfinite(preds).all():
             raise FloatingPointError(
@@ -150,7 +179,8 @@ class TribeExtractor:
         order = np.argsort(times)
         t0 = times.min()
         duration = stimulus_duration(events, t0)
-        pred = TribePrediction(video_id, preds[order], times[order] - t0, duration)
+        raw = summarize_raw(captured, t0, duration) if captured else None
+        pred = TribePrediction(video_id, preds[order], times[order] - t0, duration, raw)
         return pred.trimmed()
 
     def run(
@@ -215,6 +245,98 @@ class TribeExtractor:
         long = pd.concat(frames, ignore_index=True)
         save_table(long, out_dir / table_name)
         return long
+
+
+HOOK_SECONDS_RAW = 5.0
+
+
+def _to_numpy(x) -> np.ndarray:
+    if hasattr(x, "detach"):
+        return x.detach().float().cpu().numpy()
+    return np.asarray(x, dtype=np.float32)
+
+
+def summarize_raw(
+    captured: list, t0: float, duration: float | None, hook_seconds: float = HOOK_SECONDS_RAW
+) -> dict[str, np.ndarray]:
+    """Summarise TRIBE's per-modality input features for one video.
+
+    ``captured`` holds ``(data, segments)`` per forward pass, where
+    ``data[modality]`` is ``(batch, layer_groups, features, time)`` (or without
+    the layer axis) and each segment has ``start`` and ``duration``. Samples at
+    or after the end of the stimulus (window padding) are dropped. Returns, per
+    modality: ``<m>__mean`` (average over the video) and ``<m>__hook`` (average
+    over the first ``hook_seconds``), each flattened over layer groups, plus
+    ``<m>__present`` (1.0).
+    """
+    per_mod: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+    for data, segments in captured:
+        for m, arr in data.items():
+            arr = np.asarray(arr, dtype=np.float32)
+            if arr.ndim == 3:
+                arr = arr[:, None]
+            for b in range(arr.shape[0]):
+                x = arr[b]  # L, H, T
+                n_t = x.shape[-1]
+                seg = segments[b] if b < len(segments) else None
+                start = float(getattr(seg, "start", t0)) - t0 if seg is not None else 0.0
+                seg_dur = float(getattr(seg, "duration", n_t)) if seg is not None else float(n_t)
+                times = start + np.arange(n_t) * seg_dur / n_t
+                keep = times < duration - 1e-6 if duration is not None else np.ones(n_t, bool)
+                if keep.any():
+                    per_mod.setdefault(m, []).append((x[..., keep], times[keep]))
+    out: dict[str, np.ndarray] = {}
+    for m, parts in per_mod.items():
+        x = np.concatenate([p[0] for p in parts], axis=-1)
+        t = np.concatenate([p[1] for p in parts])
+        hook = t < hook_seconds
+        if not hook.any():
+            hook = t <= t.min()
+        out[f"{m}__mean"] = x.mean(axis=-1).ravel().astype(np.float32)
+        out[f"{m}__hook"] = x[..., hook].mean(axis=-1).ravel().astype(np.float32)
+        out[f"{m}__present"] = np.array([1.0], np.float32)
+    return out
+
+
+def raw_feature_table(preds_dir: str | Path, ids: set[str] | None = None) -> pd.DataFrame:
+    """One row per video with saved raw-feature summaries; columns ``raw:<m>:<stat>:<i>``.
+
+    A modality missing for a video (e.g. text when nobody speaks) is filled
+    with zeros, as TRIBE itself does, with ``raw:<m>:present = 0``. Videos
+    predicted before raw features were saved are skipped.
+    """
+    rows: dict[str, dict[str, np.ndarray]] = {}
+    for path in sorted(Path(preds_dir).glob("*.npz")):
+        if ids is not None and path.stem not in ids:
+            continue
+        raw = TribePrediction.load(path, with_preds=False).raw
+        if raw:
+            rows[path.stem] = raw
+    if not rows:
+        return pd.DataFrame(columns=["video_id"])
+    dims: dict[str, int] = {}
+    for raw in rows.values():
+        for k, v in raw.items():
+            dims[k] = max(dims.get(k, 0), v.size)
+    modalities = sorted({k.split("__")[0] for k in dims})
+    blocks, names = [], []
+    for m in modalities:
+        for stat in ("mean", "hook"):
+            key = f"{m}__{stat}"
+            if key not in dims:
+                continue
+            mat = np.zeros((len(rows), dims[key]), np.float32)
+            for i, raw in enumerate(rows.values()):
+                if key in raw:
+                    mat[i, : raw[key].size] = raw[key]
+            blocks.append(mat)
+            names += [f"raw:{m}:{stat}:{j}" for j in range(dims[key])]
+        present = np.array([[float(f"{m}__present" in raw)] for raw in rows.values()], np.float32)
+        blocks.append(present)
+        names.append(f"raw:{m}:present")
+    table = pd.DataFrame(np.hstack(blocks), columns=names)
+    table.insert(0, "video_id", list(rows))
+    return table
 
 
 def stimulus_duration(events: pd.DataFrame, t0: float = 0.0) -> float | None:

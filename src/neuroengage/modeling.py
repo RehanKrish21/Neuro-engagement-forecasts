@@ -30,6 +30,8 @@ from sklearn.preprocessing import StandardScaler
 def make_model(kind: str = "ridge", seed: int = 0) -> RegressorMixin:
     if kind == "ridge":
         return make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-2, 4, 25)))
+    if kind == "ridge_wide":  # thousands of features, few videos: allow much stronger shrinkage
+        return make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(0, 8, 33)))
     if kind == "hgb":
         return HistGradientBoostingRegressor(
             max_iter=300,
@@ -107,8 +109,12 @@ def evaluate_video_model(
     model: str = "ridge",
     seed: int = 0,
     ensembles: dict[str, tuple[str, str]] | None = None,
+    set_models: dict[str, str] | None = None,
 ) -> EvalResult:
     """Cross-validation of each feature set for one video-level target.
+
+    ``set_models`` overrides ``model`` per feature set (e.g. ``ridge_wide``
+    for high-dimensional raw features).
 
     ``ensembles`` maps a name to two feature-set names whose held-out
     predictions are combined by a fixed 50/50 average of ranks (nothing is
@@ -137,8 +143,9 @@ def evaluate_video_model(
     for name, cols in feature_sets.items():
         X = data[cols].to_numpy(float)
         pred = np.full(len(y), np.nan)
+        kind = (set_models or {}).get(name, model)
         for k, (tr, te) in enumerate(folds):
-            est = clone(make_model(model, seed)).fit(X[tr], y[tr])
+            est = clone(make_model(kind, seed)).fit(X[tr], y[tr])
             pred[te] = est.predict(X[te])
             rows.append(
                 {

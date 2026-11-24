@@ -39,5 +39,5 @@ Do TRIBE v2-predicted brain responses add predictive value for short-video hook 
 ## Not changing after seeing data
 The outcome, primary comparison, feature definitions, baseline columns, CV scheme, bootstrap settings and decision rule above.
 
-## Deviations
-_None yet._
+## Deviations and additions
+- **2026-11-24 (before run 2 started), exploratory addition, not a change to the primary test:** a *raw-feature baseline*. TRIBE's own input features (V-JEPA 2 video, Wav2Vec-BERT audio, Llama 3.2 text) are recorded during extraction and summarised as whole-video and first-5-s averages. They are fed to a ridge model with a wide regularisation grid (alpha 1 to 10^8), using the same 5-fold CV and bootstrap. Reported: `raw` vs `brain`, per-modality raw sets, and a 50/50 rank average of raw and brain. It covers only videos processed with v0.8.0+, so not run 1. It is labelled exploratory in every report.

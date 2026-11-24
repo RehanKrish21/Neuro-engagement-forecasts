@@ -26,6 +26,9 @@ What this does and doesn't show:
 - **It is on par with simple metadata, not better.** The brain-minus-baseline difference is −0.06 [−0.24, +0.13]. With 135 videos this sample can't separate them.
 - **It may be complementary.** Brain and baseline predictions correlate only 0.36, and brain predictions still track ECR after accounting for the baseline (partial ρ = 0.19). A single combined model with 101 features couldn't exploit this on ~108 training videos per fold. A simple 50/50 average scored higher (gain +0.03 [−0.07, +0.14]), but it was picked after seeing the data, so it's a hypothesis, not a finding.
 
+### Next: does the "brain" step add anything beyond TRIBE's own inputs?
+TRIBE turns three AI models' features (V-JEPA 2 for video, Wav2Vec-BERT for audio, Llama 3.2 for text) into predicted brain activity. From v0.8.0 those **raw input features are recorded during extraction** (no extra GPU time), and every report includes an exploratory comparison of `brain` vs `raw`. If predicted brain activity can't beat its own inputs, the brain framing adds interpretability but not prediction. That's the key question for every "brain-score" product, and it's answered here in the open.
+
 ### Run 2 onwards (pre-registered)
 The next runs accumulate more videos (target ≥ 700) and test that hypothesis on **videos not used in run 1**, with the comparison, metrics and decision rule fixed in advance: see [docs/preregistration.md](docs/preregistration.md). Held-out predictions for run 1 are in [docs/results/](docs/results/) for anyone to re-check.
 
@@ -81,7 +84,7 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 39 tests
+pytest -q                                 # 44 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
 neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
@@ -196,7 +199,7 @@ Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --sh
 - [x] Run TRIBE v2 on a SnapUGC subset and publish the real comparison (run 1, 135 videos)
 - [ ] Pre-registered run 2+: ≥ 700 videos, confirmatory test on new videos
 - [ ] Run on a real channel's back catalogue with YouTube Analytics retention curves
-- [ ] Add raw-embedding baselines (V-JEPA 2, Wav2Vec-BERT, Llama 3.2) as a built-in feature set
+- [x] Raw-feature baseline: TRIBE's own V-JEPA 2 / Wav2Vec-BERT / Llama 3.2 inputs, recorded during extraction (v0.8.0)
 - [ ] Train a subcortical (ventral striatum) readout with `tribev2.grids.run_subcortical`
 - [ ] Multi-task fine-tune: engagement head on TRIBE's latent space, keeping the brain-prediction loss as a regularizer
 - [ ] Per-second "drop-off risk" visualizer synced to video playback
@@ -218,7 +221,7 @@ src/neuroengage/
 notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
 notebooks/kaggle_snapugc.ipynb  Kaggle: same, plus background 'Save & Run All' runs
 cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
-tests/              39 tests, including signal-recovery and null-control checks
+tests/              44 tests, including signal-recovery and null-control checks
 ```
 
 ## References

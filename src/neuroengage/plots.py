@@ -126,6 +126,8 @@ SET_COLORS = {  # fixed categorical order: colour follows the feature set, never
     "brain_compact": "#e87ba4",
     "baseline+brain_compact": "#008300",
     "avg(baseline,brain_compact)": "#6250d6",
+    "raw": "#e34948",
+    "avg(raw,brain)": "#9085e9",
 }
 
 

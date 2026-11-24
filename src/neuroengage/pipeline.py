@@ -219,6 +219,7 @@ def run_score_training(
     note: str = "",
     n_boot: int = 2000,
     exploratory_ids: set[str] | None = None,
+    raw_features: pd.DataFrame | None = None,
 ) -> dict:
     """Video-level evaluation against per-video scores (no retention curves).
 
@@ -327,6 +328,13 @@ def run_score_training(
     def ci(lo, hi):
         return [f"[{a:.2f}, {b:.2f}]" for a, b in zip(lo, hi)]
 
+    raw_section: list[str] = []
+    if raw_features is not None and len(raw_features):
+        raw_section = _raw_comparison(video, raw_features, targets, sets, group_col,
+                                      normalize_within_group, n_splits, seed, n_boot, out_dir, ci)
+        info["n_videos_with_raw"] = int(video["video_id"].isin(set(raw_features["video_id"])).sum())
+        (out_dir / "run_info.json").write_text(json.dumps(info, indent=2))
+
     pv = pd.DataFrame({
         "subset": pooled_df["subset"],
         "target": pooled_df["target"],
@@ -370,8 +378,75 @@ def run_score_training(
         _fmt(v),
         "",
     ]
+    parts += raw_section
     for target in targets:
         parts += [f"## Largest standardized coefficients: {target} (baseline+brain ridge)", "",
                   _fmt(top[top.target == target].drop(columns="target")), ""]
     (out_dir / "report.md").write_text("\n".join(parts))
-    return {"video": summary, "info": info}
+    return {"video": summary, "info": info, "pooled": pooled_df}
+
+
+MIN_RAW_VIDEOS = 50
+
+
+def _raw_comparison(video, raw_features, targets, sets, group_col, normalize_within_group,
+                    n_splits, seed, n_boot, out_dir, ci) -> list[str]:
+    """Exploratory: TRIBE's input features vs its predicted brain responses."""
+    raw_features = raw_features.assign(video_id=raw_features["video_id"].astype(str))
+    data = video.merge(raw_features, on="video_id")
+    if len(data) < MIN_RAW_VIDEOS:
+        logger.warning("Raw-feature comparison skipped: %d videos have raw features (need %d)",
+                       len(data), MIN_RAW_VIDEOS)
+        return ["## Raw-feature baseline (exploratory)", "",
+                f"Skipped: only {len(data)} videos have saved raw features (need {MIN_RAW_VIDEOS}). "
+                "Videos predicted before version 0.8.0 have none.", ""]
+    raw_cols = [c for c in raw_features.columns if c.startswith("raw:")]
+    by_mod = {}
+    for c in raw_cols:
+        by_mod.setdefault(c.split(":")[1], []).append(c)
+    rsets = {"raw": raw_cols, **{f"raw_{m}": cols for m, cols in sorted(by_mod.items())},
+             "brain": sets["brain"], "baseline": sets["baseline"]}
+    set_models = {k: "ridge_wide" for k in rsets if k.startswith("raw")}
+    ensembles = {"avg(raw,brain)": ("raw", "brain")}
+    tables = []
+    for target in targets:
+        col = target
+        if group_col and normalize_within_group:
+            col = f"{target}__group_z"
+            data[col] = creator_normalize(data, target, creator_col=group_col).to_numpy()
+        res = evaluate_video_model(data, col, rsets, group_col=group_col, n_splits=n_splits, seed=seed,
+                                   ensembles=ensembles, set_models=set_models)
+        res.oof_predictions.to_csv(out_dir / f"oof_raw_{target}.csv", index=False)
+        tables.append(pooled_metrics(res.oof_predictions, baseline="raw", n_boot=n_boot, seed=seed)
+                      .assign(target=target))
+    t = pd.concat(tables, ignore_index=True)
+    t.to_csv(out_dir / "raw_comparison_metrics.csv", index=False)
+    try:
+        from .plots import plot_pooled
+
+        plot_pooled(t.assign(subset="raw"), out_dir / "raw_comparison.png",
+                    title=f"Brain features vs TRIBE's raw inputs ({len(data)} videos)")
+    except ImportError:
+        pass
+    tv = pd.DataFrame({
+        "target": t["target"], "feature_set": t["feature_set"],
+        "spearman": t["spearman"].round(3), "95% CI": ci(t["spearman_lo"], t["spearman_hi"]),
+        "pairwise_acc": t["pairwise_acc"].round(3), "pairwise 95% CI": ci(t["pairwise_lo"], t["pairwise_hi"]),
+        "gain_vs_raw": t["gain_vs_baseline"].round(3), "gain 95% CI": ci(t["gain_lo"], t["gain_hi"]),
+        "P(gain>0)": t["p_gain_positive"].round(2),
+    })
+    dims = ", ".join(f"{m}: {len(c)}" for m, c in sorted(by_mod.items()))
+    return [
+        "## Raw-feature baseline (exploratory, added 2026-11-24)",
+        "",
+        f"{len(data)} videos with saved raw features. `raw` = the features TRIBE itself is built on "
+        f"(V-JEPA 2 video, Wav2Vec-BERT audio, Llama 3.2 text: whole-video and first-5-s averages; "
+        f"dimensions {dims}), fed to a ridge model with strong regularisation. Gains are relative to "
+        "`raw`: does TRIBE's predicted brain activity add anything beyond its own inputs? Not part of "
+        "the pre-registered primary test.",
+        "",
+        "![raw comparison](raw_comparison.png)",
+        "",
+        _fmt(tv),
+        "",
+    ]
