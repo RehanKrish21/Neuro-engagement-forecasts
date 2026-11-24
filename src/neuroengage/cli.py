@@ -60,6 +60,7 @@ def _snapugc_prepare(args) -> None:
 def _snapugc_download(args) -> None:
     from .snapugc import done_ids, download_videos, load_labels, sample_candidates
 
+    Path(args.videos_dir).mkdir(parents=True, exist_ok=True)
     labels = load_labels(args.labels, id_col=args.id_col or None)
     done = done_ids(args.done_dir) & set(labels["video_id"])
     need = max(args.n - len(done), 0)
@@ -68,10 +69,20 @@ def _snapugc_download(args) -> None:
     if need == 0:
         print("Nothing to download")
         return
-    candidates = sample_candidates(labels, int(need * args.oversample), seed=args.seed, exclude_ids=done)
-    log = download_videos(candidates, args.videos_dir, workers=args.workers)
+    fallback = None
+    if args.mirror:
+        from .snapugc import hf_mirror_index
+
+        fallback = hf_mirror_index(args.mirror, cache_path=Path(args.videos_dir).parent / f"{args.mirror}_index.json")
+        in_mirror = labels["video_id"].isin(fallback)
+        print(f"Mirror {args.mirror}: {len(fallback):,} videos indexed; covers {int(in_mirror.sum()):,} of "
+              f"{len(labels):,} labelled videos. Dead official links fall back to it.")
+        labels = labels[in_mirror | labels.get("url", pd.Series(index=labels.index)).notna()]
+    candidates = sample_candidates(labels, int(need * args.oversample), seed=args.seed, exclude_ids=done,
+                                   keep_without_url=bool(fallback))
+    log = download_videos(candidates, args.videos_dir, workers=args.workers, fallback_urls=fallback)
     print(log["status"].value_counts().to_string())
-    ok = log["status"].isin(["ok", "exists"]).sum()
+    ok = log["status"].isin(["ok", "ok_mirror", "exists"]).sum()
     print(f"{ok}/{len(log)} videos available in {args.videos_dir}")
 
 
@@ -211,6 +222,8 @@ def main(argv: list[str] | None = None) -> None:
     sd.add_argument("--seed", type=int, default=0)
     sd.add_argument("--id-col", default="")
     sd.add_argument("--done-dir", default="", help="preds/ folder of earlier runs: skip those videos")
+    sd.add_argument("--mirror", default="", choices=["", "tcm03"],
+                    help="Fall back to an unofficial Hugging Face copy of the SnapUGC videos for dead links")
     sd.set_defaults(func=_snapugc_download)
 
     ts_ = sub.add_parser("train-scores", help="Evaluate brain features vs baselines on per-video scores")

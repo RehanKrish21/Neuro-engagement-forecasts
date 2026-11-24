@@ -84,7 +84,7 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 44 tests
+pytest -q                                 # 45 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
 neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
@@ -178,6 +178,20 @@ modal volume get neuroengage-data /runs/snapugc_n3000_seed0/results ./results
 
 Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --shard-index K --num-shards N` on each machine, then `neuroengage merge-shards`.
 
+## More data: what's available (checked 2026-11-24)
+
+**Short videos with engagement labels**
+- **SnapUGC copy on Hugging Face** (`tcm03/SnapUGC_0..3`, unofficial): 121,506 SnapUGC videos named by their official IDs, full length. `snapugc-download --mirror tcm03` uses it for dead official links; labels still come from SnapUGC's own CSV.
+- **SMP-Video** ([`smpchallenge/SMP-Video`](https://huggingface.co/datasets/smpchallenge/SMP-Video), gated, benchmark license): ~6,000 video files *grouped by user*, with popularity labels. A second dataset, and one where creator-grouped evaluation is possible.
+- **MicroLens** (Westlake, research-only): up to ~1M videos with like and view counts; longer than Spotlight clips.
+- No public dataset has true **per-second retention curves**; for the drop-off model, a channel's own YouTube Analytics remains the source.
+
+**Real brain data**
+- **Tong et al. 2020** ([OSF 6c4xd](https://osf.io/6c4xd/)): per-video *measured* nucleus accumbens, anterior insula, mPFC and PCC activity plus YouTube outcomes for 32 videos (National Geographic / Animal Planet / Discovery clips under 3 min). The video links aren't published, so an in-silico replication needs the list from the authors.
+- **Spacetop** ([OpenNeuro ds005256](https://openneuro.org/datasets/ds005256), CC0, ~101 participants, 2.2 TB): includes a **short-video** task (~5 s social clips) and 2 h of movie clips. Not in TRIBE v2's training data, so it can test how well TRIBE predicts real brain responses to short clips.
+- **Emo-FilM** ([OpenNeuro ds004892](https://openneuro.org/datasets/ds004892), CC0, 30 participants): 14 short films with moment-by-moment emotion ratings and physiology. A good fit for amygdala and insula questions.
+- Caution: TRIBE v2 was trained on Algonauts/CNeuroMod, **BOLD Moments**, Lebel and Wen data, so those can't test it fairly.
+
 ## What would count as a real result
 
 - `baseline+brain` beats `baseline` on held-out creators, in most folds, by a margin larger than the fold-to-fold spread.
@@ -221,7 +235,7 @@ src/neuroengage/
 notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
 notebooks/kaggle_snapugc.ipynb  Kaggle: same, plus background 'Save & Run All' runs
 cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
-tests/              44 tests, including signal-recovery and null-control checks
+tests/              45 tests, including signal-recovery and null-control checks
 ```
 
 ## References

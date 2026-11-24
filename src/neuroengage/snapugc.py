@@ -122,6 +122,7 @@ def sample_candidates(
     stratify_on: str | None = None,
     n_bins: int = 10,
     exclude_ids: set[str] | None = None,
+    keep_without_url: bool = False,
 ) -> pd.DataFrame:
     """Stratified sample of ``n`` labelled videos to download.
 
@@ -133,7 +134,7 @@ def sample_candidates(
     df = labels
     if exclude_ids:
         df = df[~df["video_id"].isin(exclude_ids)]
-    if "url" in df:
+    if "url" in df and not keep_without_url:
         df = df[df["url"].notna() & df["url"].astype(str).str.startswith("http")]
     return _stratified(df, n, seed, stratify_on, n_bins).reset_index(drop=True)
 
@@ -174,18 +175,64 @@ def _fetch(url: str, dest: Path, timeout: float, retries: int) -> tuple[str, int
     return last, 0
 
 
+HF_MIRROR_REPOS = {
+    # Unofficial Hugging Face re-upload of SnapUGC video files (user tcm03), named
+    # <SnapUGC Id>.mp4. Checked 2026-11-24: 121,506 unique IDs, full-length videos,
+    # all 135 run-1 IDs present. Its own labels are 3 coarse classes, so labels
+    # always come from the official SnapUGC CSV; only the video files are used.
+    "tcm03": ("SnapUGC_0", "SnapUGC_1", "SnapUGC_2", "SnapUGC_3", "SnapUGC"),
+}
+
+
+def hf_mirror_index(
+    mirror: str = "tcm03",
+    cache_path: str | Path | None = None,
+    fetch=None,
+) -> dict[str, str]:
+    """Map SnapUGC video ID -> download URL in a Hugging Face mirror.
+
+    Built from the Hub API's file listings (a few MB of JSON, no video
+    downloads) and optionally cached to ``cache_path``. ``fetch(url) -> dict``
+    can be injected for tests.
+    """
+    import json
+
+    if cache_path and Path(cache_path).exists():
+        return json.loads(Path(cache_path).read_text())
+    if fetch is None:
+        def fetch(url):
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.load(resp)
+    index: dict[str, str] = {}
+    for repo in HF_MIRROR_REPOS[mirror]:
+        info = fetch(f"https://huggingface.co/api/datasets/{mirror}/{repo}")
+        for sib in info.get("siblings", []):
+            name = sib["rfilename"]
+            if name.endswith(".mp4"):
+                vid = name.rsplit("/", 1)[-1][:-4]
+                index.setdefault(vid, f"https://huggingface.co/datasets/{mirror}/{repo}/resolve/main/{name}")
+    if cache_path:
+        Path(cache_path).write_text(json.dumps(index))
+    logger.info("HF mirror %s: %d videos indexed", mirror, len(index))
+    return index
+
+
 def download_videos(
     candidates: pd.DataFrame,
     videos_dir: str | Path,
     workers: int = 8,
     timeout: float = 60.0,
     retries: int = 2,
+    fallback_urls: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Download ``<videos_dir>/<video_id>.mp4`` for each row with a ``url``.
 
-    Resumable: valid files already on disk are skipped. Returns one row per
-    video with ``status`` (``ok``, ``exists``, ``http_403``, ``not_mp4``, ...)
-    and appends it to ``<videos_dir>/_download_log.csv``.
+    Resumable: valid files already on disk are skipped. If the official link
+    fails and ``fallback_urls`` (e.g. :func:`hf_mirror_index`) has the video,
+    it is fetched from there instead (status ``ok_mirror``). Returns one row
+    per video with ``status`` (``ok``, ``ok_mirror``, ``exists``, ``http_403``,
+    ``not_mp4``, ...) and appends it to ``<videos_dir>/_download_log.csv``.
     """
     if "url" not in candidates:
         raise KeyError("candidates need a 'url' column (load_labels keeps Download_link as url)")
@@ -196,7 +243,14 @@ def download_videos(
         dest = videos_dir / f"{row.video_id}.mp4"
         if dest.exists() and _is_mp4(dest):
             return {"video_id": row.video_id, "status": "exists", "bytes": dest.stat().st_size}
-        status, size = _fetch(str(row.url), dest, timeout, retries)
+        status, size = ("no_url", 0)
+        if isinstance(row.url, str) and row.url.startswith("http"):
+            status, size = _fetch(str(row.url), dest, timeout, retries)
+        if status != "ok" and fallback_urls and row.video_id in fallback_urls:
+            m_status, m_size = _fetch(fallback_urls[row.video_id], dest, timeout, retries)
+            if m_status == "ok":
+                return {"video_id": row.video_id, "status": "ok_mirror", "bytes": m_size}
+            status = f"{status}|mirror_{m_status}"
         return {"video_id": row.video_id, "status": status, "bytes": size}
 
     rows = list(candidates[["video_id", "url"]].itertuples(index=False))
@@ -205,7 +259,7 @@ def download_videos(
         for i, res in enumerate(pool.map(one, rows), 1):
             results.append(res)
             if i % 50 == 0 or i == len(rows):
-                ok = sum(r["status"] in ("ok", "exists") for r in results)
+                ok = sum(r["status"] in ("ok", "ok_mirror", "exists") for r in results)
                 logger.info("SnapUGC download %d/%d (%d ok, %.0f s)", i, len(rows), ok, time.time() - t0)
     log = pd.DataFrame(results)
     log_path = videos_dir / "_download_log.csv"

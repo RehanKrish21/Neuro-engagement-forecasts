@@ -191,3 +191,27 @@ def test_runs_accumulate_with_done_ids(tmp_path):
     assert len(m) == 60 and first <= set(m["video_id"])        # all earlier work kept
     m_small = build_manifest(labels, vids, n=10, include_ids=first)
     assert set(m_small["video_id"]) == first                     # never drops finished work
+
+
+def test_mirror_fallback_for_dead_links(tmp_path, monkeypatch):
+    from neuroengage.snapugc import download_videos, hf_mirror_index
+
+    src = tmp_path / "cdn"
+    src.mkdir()
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 500
+    (src / "alive.bin").write_bytes(mp4)
+    (src / "mirror_dead.mp4").write_bytes(mp4)
+    server, base = _serve(src, monkeypatch)
+    try:
+        fake_api = {"siblings": [{"rfilename": "train/train_0/dead.mp4"}, {"rfilename": "x.json"}]}
+        index = hf_mirror_index("tcm03", cache_path=tmp_path / "idx.json", fetch=lambda url: fake_api)
+        assert index == {"dead": "https://huggingface.co/datasets/tcm03/SnapUGC_0/resolve/main/train/train_0/dead.mp4"}
+        assert hf_mirror_index("tcm03", cache_path=tmp_path / "idx.json") == index   # served from cache
+        cand = pd.DataFrame({"video_id": ["alive", "dead", "gone"], "ecr": [0.1, 0.2, 0.3],
+                             "url": [f"{base}/alive.bin", f"{base}/404.bin", f"{base}/404.bin"]})
+        log = download_videos(cand, tmp_path / "v", workers=2, retries=0,
+                              fallback_urls={"dead": f"{base}/mirror_dead.mp4"}).set_index("video_id")["status"]
+        assert log["alive"] == "ok" and log["dead"] == "ok_mirror" and log["gone"] == "http_404"
+        assert (tmp_path / "v" / "dead.mp4").exists()
+    finally:
+        server.shutdown()
