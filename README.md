@@ -6,9 +6,36 @@ This project uses [TRIBE v2](https://github.com/facebookresearch/tribev2), Meta 
 
 The idea comes from *neuroforecasting*: brain activity measured in a small group of people can predict how a much larger population behaves. Tong et al. (2020, *PNAS*) found that reward-related (nucleus accumbens) and aversion-related (anterior insula) responses to YouTube videos forecast their real view counts and watch time better than people's own ratings did. Running that kind of study takes an fMRI scanner. TRIBE v2 makes it possible to approximate the brain-response step *in silico*, for any video, at no scanning cost. This repo provides the pipeline to check whether that approximation is actually useful.
 
+## Results so far
+
+### Run 1 (exploratory): 135 real Snapchat videos
+
+TRIBE v2 was run on 135 videos from [SnapUGC](https://github.com/dasongli1/SnapUGC_Engagement) on free Kaggle T4 GPUs. The outcome is **ECR**, the share of viewers who keep watching past 5 seconds (a "hook" score). Every number below is computed on videos the model did not see during training (5-fold cross-validation); intervals are 95% bootstrap CIs over videos.
+
+![Run 1 results](docs/results/run1_snapugc_ecr.png)
+
+| Model | Spearman ρ with ECR [95% CI] | Picks the better of two videos [95% CI] |
+|---|---|---|
+| Baseline: length + title/description stats | 0.35 [0.19, 0.48] | 61% [56, 66] |
+| **Brain features only** (TRIBE-predicted networks) | **0.29 [0.13, 0.43]** | **60% [54, 65]** |
+| Baseline + brain, one ridge model | 0.33 [0.17, 0.46] | 61% [56, 66] |
+| 50/50 average of baseline and brain *(chosen after seeing these results)* | 0.38 [0.23, 0.51] | 63% [58, 67] |
+
+What this does and doesn't show:
+- **Predicted brain activity alone carries real signal about the hook.** Its interval stays clearly above zero, and it orders pairs of unseen videos correctly about 60% of the time (chance is 50%).
+- **It is on par with simple metadata, not better.** The brain-minus-baseline difference is −0.06 [−0.24, +0.13]. With 135 videos this sample can't separate them.
+- **It may be complementary.** Brain and baseline predictions correlate only 0.36, and brain predictions still track ECR after accounting for the baseline (partial ρ = 0.19). A single combined model with 101 features couldn't exploit this on ~108 training videos per fold. A simple 50/50 average scored higher (gain +0.03 [−0.07, +0.14]), but it was picked after seeing the data, so it's a hypothesis, not a finding.
+
+### Run 2 onwards (pre-registered)
+The next runs accumulate more videos (target ≥ 700) and test that hypothesis on **videos not used in run 1**, with the comparison, metrics and decision rule fixed in advance: see [docs/preregistration.md](docs/preregistration.md). Held-out predictions for run 1 are in [docs/results/](docs/results/) for anyone to re-check.
+
+<details>
+<summary>Pipeline check on synthetic data</summary>
+
 ![Pipeline demo on synthetic data](docs/demo_summary.png)
 
-> The figure above is from **synthetic data** with a planted signal (`neuroengage demo`). It shows the evaluation pipeline works end to end and recovers a known effect. It is **not** a result about real videos. A matching null run (`neuroengage demo --null`) confirms that the brain features add nothing when no signal is planted.
+> **Synthetic data** with a planted signal (`neuroengage demo`). It shows the evaluation pipeline works end to end and recovers a known effect; it is **not** a result about real videos. A matching null run (`neuroengage demo --null`) confirms that the brain features add nothing when no signal is planted.
+</details>
 
 ---
 
@@ -54,7 +81,7 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 35 tests
+pytest -q                                 # 39 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
 neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
@@ -166,7 +193,8 @@ Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --sh
 ## Roadmap
 
 - [x] SnapUGC support (label file + sampled video download; ECR / NAWP targets)
-- [ ] Run TRIBE v2 on a SnapUGC subset and publish the real comparison
+- [x] Run TRIBE v2 on a SnapUGC subset and publish the real comparison (run 1, 135 videos)
+- [ ] Pre-registered run 2+: ≥ 700 videos, confirmatory test on new videos
 - [ ] Run on a real channel's back catalogue with YouTube Analytics retention curves
 - [ ] Add raw-embedding baselines (V-JEPA 2, Wav2Vec-BERT, Llama 3.2) as a built-in feature set
 - [ ] Train a subcortical (ventral striatum) readout with `tribev2.grids.run_subcortical`
@@ -190,7 +218,7 @@ src/neuroengage/
 notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
 notebooks/kaggle_snapugc.ipynb  Kaggle: same, plus background 'Save & Run All' runs
 cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
-tests/              35 tests, including signal-recovery and null-control checks
+tests/              39 tests, including signal-recovery and null-control checks
 ```
 
 ## References

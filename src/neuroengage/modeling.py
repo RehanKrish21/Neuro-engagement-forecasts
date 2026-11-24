@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import kendalltau, rankdata, spearmanr
 from sklearn.base import RegressorMixin, clone
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import RidgeCV
@@ -106,8 +106,14 @@ def evaluate_video_model(
     n_splits: int = 5,
     model: str = "ridge",
     seed: int = 0,
+    ensembles: dict[str, tuple[str, str]] | None = None,
 ) -> EvalResult:
     """Cross-validation of each feature set for one video-level target.
+
+    ``ensembles`` maps a name to two feature-set names whose held-out
+    predictions are combined by a fixed 50/50 average of ranks (nothing is
+    fitted, so it cannot overfit). Fold metrics use ranks within the fold;
+    the pooled out-of-fold column uses ranks over all videos.
 
     With ``group_col`` (e.g. creator), folds hold out whole groups. With
     ``group_col=None`` (datasets without creator IDs, like SnapUGC), folds
@@ -143,7 +149,71 @@ def evaluate_video_model(
                 }
             )
         oof[f"pred__{name}"] = pred
+    for name, (a, b) in (ensembles or {}).items():
+        pa, pb = oof[f"pred__{a}"], oof[f"pred__{b}"]
+        for k, (_, te) in enumerate(folds):
+            fold_pred = (rankdata(pa[te]) + rankdata(pb[te])) / 2
+            rows.append({"feature_set": name, "fold": k,
+                         "spearman": spearmanr(y[te], fold_pred).statistic, "r2": np.nan})
+        oof[f"pred__{name}"] = (rankdata(pa) + rankdata(pb)) / (2 * len(y))
     return EvalResult(pd.DataFrame(rows), pd.DataFrame(oof))
+
+
+def pairwise_accuracy(y: np.ndarray, pred: np.ndarray) -> float:
+    """Share of video pairs ordered correctly ("which of two does better?").
+
+    Computed as (1 + Kendall's tau-b) / 2, i.e. concordant / (concordant +
+    discordant) when there are no ties. 0.5 is chance.
+    """
+    tau = kendalltau(y, pred).statistic
+    return float((1 + tau) / 2) if np.isfinite(tau) else np.nan
+
+
+def pooled_metrics(
+    oof: pd.DataFrame,
+    baseline: str = "baseline",
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Pooled out-of-fold metrics with 95% bootstrap intervals.
+
+    For each ``pred__<set>`` column: Spearman, pairwise accuracy, and the
+    Spearman gain over ``baseline``. Videos are resampled with replacement
+    and the *same* resample is used for every set, so gains are paired.
+    """
+    y = oof["y_true"].to_numpy(float)
+    sets = [c[len("pred__"):] for c in oof.columns if c.startswith("pred__")]
+    preds = {s: oof[f"pred__{s}"].to_numpy(float) for s in sets}
+    point = {s: (spearmanr(y, p).statistic, pairwise_accuracy(y, p)) for s, p in preds.items()}
+    rng = np.random.default_rng(seed)
+    boot = {s: [] for s in sets}
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(y), len(y))
+        for s, p in preds.items():
+            boot[s].append((spearmanr(y[idx], p[idx]).statistic, pairwise_accuracy(y[idx], p[idx])))
+    rows = []
+    base = np.array(boot[baseline])[:, 0] if baseline in boot else None
+    for s in sets:
+        b = np.array(boot[s])
+        row = {
+            "feature_set": s,
+            "spearman": point[s][0],
+            "spearman_lo": np.nanpercentile(b[:, 0], 2.5),
+            "spearman_hi": np.nanpercentile(b[:, 0], 97.5),
+            "pairwise_acc": point[s][1],
+            "pairwise_lo": np.nanpercentile(b[:, 1], 2.5),
+            "pairwise_hi": np.nanpercentile(b[:, 1], 97.5),
+        }
+        if base is not None:
+            gain = b[:, 0] - base
+            row.update({
+                "gain_vs_baseline": point[s][0] - point[baseline][0],
+                "gain_lo": np.nanpercentile(gain, 2.5),
+                "gain_hi": np.nanpercentile(gain, 97.5),
+                "p_gain_positive": float(np.nanmean(gain > 0)),
+            })
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def evaluate_dropoff_model(

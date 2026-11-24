@@ -55,7 +55,7 @@ def test_build_manifest_filters_missing_and_stratifies(tmp_path):
 
 def test_score_pipeline_recovers_signal_and_null(tmp_path):
     manifest, ts = make_score_dataset(seed=4, n_creators=10, videos_per_creator=12)
-    res = run_score_training(manifest, ts, ["nawp", "ecr"], tmp_path / "sig", hook_seconds=5)
+    res = run_score_training(manifest, ts, ["nawp", "ecr"], tmp_path / "sig", hook_seconds=5, n_boot=100)
     v = res["video"].set_index(["target", "feature_set"])
     assert v.loc[("ecr", "baseline+brain"), "spearman_gain_vs_baseline"] > 0.2
     assert (tmp_path / "sig" / "summary.png").exists()
@@ -63,7 +63,7 @@ def test_score_pipeline_recovers_signal_and_null(tmp_path):
     manifest, ts = make_score_dataset(
         seed=4, n_creators=10, videos_per_creator=12, beta_engagement=0.0, beta_aversion=0.0
     )
-    res = run_score_training(manifest, ts, ["nawp", "ecr"], tmp_path / "null", hook_seconds=5)
+    res = run_score_training(manifest, ts, ["nawp", "ecr"], tmp_path / "null", hook_seconds=5, n_boot=100)
     v = res["video"].set_index(["target", "feature_set"])
     for target in ["nawp", "ecr"]:
         assert v.loc[(target, "baseline+brain"), "spearman_gain_vs_baseline"] < 0.1
@@ -84,7 +84,7 @@ def test_cli_prepare_and_train_scores(tmp_path):
     m = pd.read_csv(tmp_path / "m.csv")
     assert len(m) == len(manifest)
     main(["train-scores", "--manifest", str(tmp_path / "m.csv"), "--timeseries",
-          str(tmp_path / "ts.csv"), "--folds", "3", "--out", str(tmp_path / "run")])
+          str(tmp_path / "ts.csv"), "--folds", "3", "--n-boot", "100", "--out", str(tmp_path / "run")])
     metrics = pd.read_csv(tmp_path / "run" / "video_level_metrics.csv")
     assert set(metrics["target"]) == {"nawp", "ecr"}
 
@@ -97,7 +97,7 @@ def test_numeric_looking_ids_survive_csv_roundtrip(tmp_path):
     manifest.to_csv(tmp_path / "m.csv", index=False)
     ts.to_csv(tmp_path / "ts.csv", index=False)
     main(["train-scores", "--manifest", str(tmp_path / "m.csv"), "--timeseries",
-          str(tmp_path / "ts.csv"), "--folds", "3", "--out", str(tmp_path / "run")])
+          str(tmp_path / "ts.csv"), "--folds", "3", "--n-boot", "100", "--out", str(tmp_path / "run")])
     info = pd.read_json(tmp_path / "run" / "run_info.json", typ="series")
     assert info["n_videos"] == len(manifest)
 
@@ -165,5 +165,29 @@ def test_ecr_only_labels_flow(tmp_path):
         (vids / f"{v}.mp4").write_bytes(b"")
     m = build_manifest(labels, vids, n=60)
     assert len(m) == 60
-    res = run_score_training(m, ts, ["nawp", "ecr"], tmp_path / "run", hook_seconds=5)
+    res = run_score_training(m, ts, ["nawp", "ecr"], tmp_path / "run", hook_seconds=5, n_boot=100)
     assert set(res["video"]["target"]) == {"ecr"}
+
+
+def test_runs_accumulate_with_done_ids(tmp_path):
+    from neuroengage.snapugc import done_ids, sample_candidates
+
+    path, df = _labels_csv(tmp_path, n=100)
+    labels = load_labels(path)
+    labels["url"] = "https://example.invalid/x"
+    vids = tmp_path / "videos"
+    vids.mkdir()
+    preds = tmp_path / "preds"
+    preds.mkdir()
+    first = set(df["Id"][:30])                       # processed in run 1; videos since deleted
+    for v in first:
+        (preds / f"{v}.npz").write_bytes(b"")
+    for v in df["Id"][30:]:
+        (vids / f"{v}.mp4").write_bytes(b"")
+    assert done_ids(preds) == first and done_ids(tmp_path / "missing") == set()
+    cand = sample_candidates(labels, 50, exclude_ids=first)
+    assert not set(cand["video_id"]) & first
+    m = build_manifest(labels, vids, n=60, include_ids=first)
+    assert len(m) == 60 and first <= set(m["video_id"])        # all earlier work kept
+    m_small = build_manifest(labels, vids, n=10, include_ids=first)
+    assert set(m_small["video_id"]) == first                     # never drops finished work

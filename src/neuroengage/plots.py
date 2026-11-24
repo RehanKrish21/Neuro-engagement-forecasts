@@ -116,3 +116,57 @@ def _plot_dropoff(a2, drop_summary: pd.DataFrame, span: float) -> None:
     a2.set_xlabel("Within-video Spearman ρ, held-out videos", color=INK_2, fontsize=9)
     a2.set_title("Where do viewers drop off?", loc="left", color=INK, fontsize=11)
 
+
+
+SET_COLORS = {  # fixed categorical order: colour follows the feature set, never its rank
+    "baseline": "#2a78d6",
+    "brain": "#eb6834",
+    "baseline+brain": "#1baf7a",
+    "avg(baseline,brain)": "#eda100",
+    "brain_compact": "#e87ba4",
+    "baseline+brain_compact": "#008300",
+    "avg(baseline,brain_compact)": "#6250d6",
+}
+
+
+def plot_pooled(pooled: pd.DataFrame, path: str | Path, title: str = "Results") -> Path:
+    """Two panels per target: Spearman (vs 0) and pairwise accuracy (vs 0.5), with 95% CIs."""
+    targets = list(dict.fromkeys(pooled["target"]))
+    sets = list(dict.fromkeys(pooled["feature_set"]))
+    fig, axes = plt.subplots(len(targets), 2, figsize=(10.5, 0.9 + 0.42 * len(sets) * len(targets)),
+                             squeeze=False, facecolor=SURFACE)
+    panels = [("spearman", "spearman_lo", "spearman_hi", 0.0, "Spearman ρ with outcome (held-out videos)"),
+              ("pairwise_acc", "pairwise_lo", "pairwise_hi", 0.5, "Pairwise accuracy (0.5 = chance)")]
+    for r, target in enumerate(targets):
+        rows = pooled[pooled.target == target].set_index("feature_set").loc[sets]
+        for c, (col, lo, hi, ref, label) in enumerate(panels):
+            ax = axes[r, c]
+            ys = np.arange(len(sets))
+            for y_, name in zip(ys, sets):
+                v = rows.loc[name, col]
+                ax.barh(y_, v - ref, left=ref, height=0.62, color=SET_COLORS.get(name, "#8a8984"),
+                        edgecolor=SURFACE, linewidth=2)
+                ax.errorbar(v, y_, xerr=[[v - rows.loc[name, lo]], [rows.loc[name, hi] - v]],
+                            fmt="none", ecolor=INK_2, elinewidth=1)
+                ax.text(max(rows.loc[name, hi], ref) + 0.012, y_, f"{v:.2f}", va="center",
+                        fontsize=8.5, color=INK)
+            ax.set_yticks(ys, sets if c == 0 else [""] * len(sets))
+            ax.invert_yaxis()
+            _style(ax)
+            ax.axvline(ref, color=INK_2, linewidth=0.8)
+            if c == 1:
+                ax.spines["left"].set_visible(False)
+            ax.set_xlabel(label, color=INK_2, fontsize=9)
+            if len(targets) > 1:
+                ax.set_title(target, loc="left", color=INK, fontsize=10)
+        lo_ = min(0.0, pooled[pooled.target == target]["spearman_lo"].min()) - 0.05
+        axes[r, 0].set_xlim(lo_, max(0.6, pooled["spearman_hi"].max() + 0.12))
+        axes[r, 1].set_xlim(0.4, max(0.75, pooled["pairwise_hi"].max() + 0.06))
+    fig.suptitle(title, x=0.01, ha="left", color=INK, fontsize=12, fontweight="bold")
+    fig.text(0.01, 0.005, "Bars: held-out estimate; whiskers: 95% bootstrap CI over videos.",
+             color=INK_2, fontsize=8)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.95))
+    path = Path(path)
+    fig.savefig(path, dpi=160, facecolor=SURFACE)
+    plt.close(fig)
+    return path

@@ -108,19 +108,31 @@ def _stratified(df: pd.DataFrame, n: int, seed: int, stratify_on: str | None, n_
     return df.sample(n=n, random_state=seed)
 
 
+def done_ids(preds_dir: str | Path | None) -> set[str]:
+    """IDs that already have TRIBE predictions (``<preds_dir>/<id>.npz``)."""
+    if not preds_dir or not Path(preds_dir).is_dir():
+        return set()
+    return {p.stem for p in Path(preds_dir).glob("*.npz")}
+
+
 def sample_candidates(
     labels: pd.DataFrame,
     n: int,
     seed: int = 0,
     stratify_on: str | None = None,
     n_bins: int = 10,
+    exclude_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Stratified sample of ``n`` labelled videos to download.
 
     Ask for more than you need (e.g. 1.3x): some CDN links will be dead, and
     :func:`build_manifest` then picks the final set from what downloaded.
+    ``exclude_ids`` (e.g. videos already processed in an earlier run) are
+    never sampled.
     """
     df = labels
+    if exclude_ids:
+        df = df[~df["video_id"].isin(exclude_ids)]
     if "url" in df:
         df = df[df["url"].notna() & df["url"].astype(str).str.startswith("http")]
     return _stratified(df, n, seed, stratify_on, n_bins).reset_index(drop=True)
@@ -219,8 +231,14 @@ def build_manifest(
     seed: int = 0,
     stratify_on: str | None = None,
     n_bins: int = 10,
+    include_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     """Manifest of labelled videos present on disk, optionally subsampled.
+
+    ``include_ids`` are videos that already have predictions (from an earlier
+    run): they are always kept, even if their video file is no longer on
+    disk, and new videos fill the manifest up to ``n``. That way runs
+    accumulate instead of starting over.
 
     TRIBE v2 costs real GPU time per video, so you will usually start with a
     few thousand videos. Subsampling is stratified across ``n_bins``
@@ -230,13 +248,17 @@ def build_manifest(
     videos_dir = Path(videos_dir)
     df = labels.copy()
     df["path"] = [str(videos_dir / f"{vid}.mp4") for vid in df["video_id"]]
+    include_ids = set(include_ids or ())
+    keep = df["video_id"].isin(include_ids).to_numpy()
     exists = np.array([Path(p).is_file() for p in df["path"]])
-    if not exists.any():
+    if not (exists | keep).any():
         raise FileNotFoundError(f"None of the labelled videos found under {videos_dir}")
-    logger.info("SnapUGC: %d of %d labelled videos are on disk", int(exists.sum()), len(df))
-    df = df[exists]
+    logger.info("SnapUGC: %d of %d labelled videos are on disk, %d already processed",
+                int(exists.sum()), len(df), int(keep.sum()))
+    kept, rest = df[keep], df[exists & ~keep]
     if n is not None:
-        df = _stratified(df, n, seed, stratify_on, n_bins)
+        rest = _stratified(rest, max(n - len(kept), 0), seed, stratify_on, n_bins)
+    df = pd.concat([kept, rest])
     cols = ["video_id", "path", *[c for c in ("nawp", "ecr") if c in df]]
     manifest = df[cols].merge(text_baselines(df), on="video_id")
     return manifest.reset_index(drop=True)

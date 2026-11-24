@@ -46,25 +46,44 @@ def _demo(args) -> None:
 
 
 def _snapugc_prepare(args) -> None:
-    from .snapugc import build_manifest, load_labels
+    from .snapugc import build_manifest, done_ids, load_labels
 
     overrides = {k: v for k, v in (("nawp", args.nawp_col), ("ecr", args.ecr_col)) if v}
     labels = load_labels(args.labels, id_col=args.id_col or None, target_cols=overrides)
-    manifest = build_manifest(labels, args.videos_dir, n=args.n, seed=args.seed)
+    manifest = build_manifest(labels, args.videos_dir, n=args.n, seed=args.seed,
+                              include_ids=done_ids(args.done_dir))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     manifest.to_csv(args.out, index=False)
     print(f"Wrote {len(manifest)} videos to {args.out}")
 
 
 def _snapugc_download(args) -> None:
-    from .snapugc import download_videos, load_labels, sample_candidates
+    from .snapugc import done_ids, download_videos, load_labels, sample_candidates
 
     labels = load_labels(args.labels, id_col=args.id_col or None)
-    candidates = sample_candidates(labels, int(args.n * args.oversample), seed=args.seed)
+    done = done_ids(args.done_dir) & set(labels["video_id"])
+    need = max(args.n - len(done), 0)
+    if done:
+        print(f"{len(done)} videos already have predictions; downloading candidates for {need} more")
+    if need == 0:
+        print("Nothing to download")
+        return
+    candidates = sample_candidates(labels, int(need * args.oversample), seed=args.seed, exclude_ids=done)
     log = download_videos(candidates, args.videos_dir, workers=args.workers)
     print(log["status"].value_counts().to_string())
     ok = log["status"].isin(["ok", "exists"]).sum()
     print(f"{ok}/{len(log)} videos available in {args.videos_dir}")
+
+
+def _exploratory(spec: str) -> set[str] | None:
+    if not spec:
+        return None
+    if spec == "snapugc-run1":
+        from .pipeline import run1_exploratory_ids
+
+        return run1_exploratory_ids()
+    lines = Path(spec).read_text().splitlines()
+    return {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
 
 
 def _train_scores(args) -> None:
@@ -79,7 +98,8 @@ def _train_scores(args) -> None:
         group_col=args.group_col or None,
         normalize_within_group=args.normalize_within_group,
         hook_seconds=args.hook_seconds,
-        n_splits=args.folds, seed=args.seed, title=args.title,
+        n_splits=args.folds, seed=args.seed, title=args.title, n_boot=args.n_boot,
+        exploratory_ids=_exploratory(args.exploratory_ids),
     )
     print(f"Wrote {args.out}/report.md")
 
@@ -168,6 +188,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--nawp-col", default="", help="Override the NAWP column name")
     sp.add_argument("--ecr-col", default="", help="Override the ECR column name")
     sp.add_argument("--out", default="work/snapugc_manifest.csv")
+    sp.add_argument("--done-dir", default="", help="preds/ folder of earlier runs: always include them")
     sp.set_defaults(func=_snapugc_prepare)
 
     sd = sub.add_parser("snapugc-download", help="Download a stratified sample of SnapUGC videos")
@@ -178,6 +199,7 @@ def main(argv: list[str] | None = None) -> None:
     sd.add_argument("--workers", type=int, default=8)
     sd.add_argument("--seed", type=int, default=0)
     sd.add_argument("--id-col", default="")
+    sd.add_argument("--done-dir", default="", help="preds/ folder of earlier runs: skip those videos")
     sd.set_defaults(func=_snapugc_download)
 
     ts_ = sub.add_parser("train-scores", help="Evaluate brain features vs baselines on per-video scores")
@@ -193,6 +215,10 @@ def main(argv: list[str] | None = None) -> None:
     ts_.add_argument("--folds", type=int, default=5)
     ts_.add_argument("--seed", type=int, default=0)
     ts_.add_argument("--title", default="Results")
+    ts_.add_argument("--n-boot", type=int, default=2000, help="Bootstrap resamples for 95%% CIs")
+    ts_.add_argument("--exploratory-ids", default="",
+                     help="'snapugc-run1' or a file of IDs used to choose the analysis; "
+                          "adds a confirmatory test on the other videos")
     ts_.add_argument("--out", default="results/scores_run")
     ts_.set_defaults(func=_train_scores)
 

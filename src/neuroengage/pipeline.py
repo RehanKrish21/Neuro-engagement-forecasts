@@ -16,7 +16,20 @@ from .modeling import (
     evaluate_dropoff_model,
     evaluate_video_model,
     fit_final,
+    pooled_metrics,
 )
+
+# Pre-registered (docs/preregistration.md): the primary comparison is
+# PRIMARY_SET vs "baseline" on pooled out-of-fold Spearman for each target.
+PRIMARY_SET = "avg(baseline,brain)"
+COMPACT_STATS = ("__mean", "__hook")
+MIN_CONFIRMATORY = 30
+
+
+def run1_exploratory_ids() -> set[str]:
+    """SnapUGC video IDs analysed in run 1, where the primary comparison was chosen."""
+    path = Path(__file__).parent / "data" / "snapugc_run1_ids.txt"
+    return {ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")}
 from .retention import dropoff_targets, video_targets
 
 logger = logging.getLogger(__name__)
@@ -204,8 +217,15 @@ def run_score_training(
     seed: int = 0,
     title: str = "Results",
     note: str = "",
+    n_boot: int = 2000,
+    exploratory_ids: set[str] | None = None,
 ) -> dict:
     """Video-level evaluation against per-video scores (no retention curves).
+
+    ``exploratory_ids``: videos already used to choose the analysis (run 1).
+    Models still train on them, but the pooled metrics are additionally
+    reported on the remaining videos only ("confirmatory"), which is the
+    fair test of a comparison chosen after seeing the exploratory data.
 
     For datasets that report one number per video, such as SnapUGC's NAWP and
     ECR. ``manifest`` holds ``video_id``, the target columns and any baseline
@@ -231,19 +251,37 @@ def run_score_training(
     if not baseline_cols:
         raise ValueError("No baseline columns found")
 
+    compact_cols = [c for c in brain_cols if c.endswith(COMPACT_STATS)]
     sets = {
         "baseline": baseline_cols,
         "brain": brain_cols,
+        "brain_compact": compact_cols,
         "baseline+brain": baseline_cols + brain_cols,
+        "baseline+brain_compact": baseline_cols + compact_cols,
     }
-    summaries, fitted = [], {}
+    ensembles = {
+        "avg(baseline,brain)": ("baseline", "brain"),
+        "avg(baseline,brain_compact)": ("baseline", "brain_compact"),
+    }
+    summaries, pooled, fitted = [], [], {}
     for target in targets:
         col = target
         if group_col and normalize_within_group:
             col = f"{target}__group_z"
             video[col] = creator_normalize(video, target, creator_col=group_col).to_numpy()
-        res = evaluate_video_model(video, col, sets, group_col=group_col, n_splits=n_splits, seed=seed)
+        res = evaluate_video_model(video, col, sets, group_col=group_col, n_splits=n_splits,
+                                   seed=seed, ensembles=ensembles)
         summaries.append(res.summary.assign(target=target))
+        oof = res.oof_predictions
+        pooled.append(pooled_metrics(oof, n_boot=n_boot, seed=seed).assign(target=target, subset="all videos"))
+        if exploratory_ids:
+            new_oof = oof[~oof["video_id"].astype(str).isin(exploratory_ids)]
+            if len(new_oof) >= MIN_CONFIRMATORY:
+                pooled.append(pooled_metrics(new_oof.reset_index(drop=True), n_boot=n_boot, seed=seed)
+                              .assign(target=target, subset=f"confirmatory: {len(new_oof)} new videos"))
+            else:
+                logger.warning("Only %d videos outside the exploratory set; confirmatory test needs %d",
+                               len(new_oof), MIN_CONFIRMATORY)
         res.oof_predictions.to_csv(out_dir / f"oof_{target}.csv", index=False)
         rows = video[video[col].notna()]
         fitted[target] = {
@@ -252,6 +290,8 @@ def run_score_training(
         }
     summary = pd.concat(summaries, ignore_index=True)
     summary.to_csv(out_dir / "video_level_metrics.csv", index=False)
+    pooled_df = pd.concat(pooled, ignore_index=True)
+    pooled_df.to_csv(out_dir / "pooled_metrics.csv", index=False)
     joblib.dump(fitted, out_dir / "models.joblib")
 
     tops = []
@@ -262,9 +302,12 @@ def run_score_training(
 
     fig_path = None
     try:
-        from .plots import plot_summary
+        from .plots import plot_pooled
 
-        fig_path = plot_summary(summary, None, out_dir / "summary.png", title=title)
+        conf = pooled_df[pooled_df["subset"].str.startswith("confirmatory")]
+        shown = conf if len(conf) else pooled_df[pooled_df["subset"] == "all videos"]
+        sub = shown["subset"].iloc[0]
+        fig_path = plot_pooled(shown, out_dir / "summary.png", title=f"{title} ({sub})")
     except ImportError:
         pass
 
@@ -275,9 +318,27 @@ def run_score_training(
         "group_col": group_col,
         "hook_seconds": hook_seconds,
         "n_brain_features": len(brain_cols),
+        "n_brain_compact_features": len(compact_cols),
+        "primary_comparison": f"{PRIMARY_SET} vs baseline",
+        "n_exploratory_excluded": int(len(set(video["video_id"]) & set(exploratory_ids or ()))),
     }
     (out_dir / "run_info.json").write_text(json.dumps(info, indent=2))
 
+    def ci(lo, hi):
+        return [f"[{a:.2f}, {b:.2f}]" for a, b in zip(lo, hi)]
+
+    pv = pd.DataFrame({
+        "subset": pooled_df["subset"],
+        "target": pooled_df["target"],
+        "feature_set": [f"**{f}** (primary)" if f == PRIMARY_SET else f for f in pooled_df["feature_set"]],
+        "spearman": pooled_df["spearman"].round(3),
+        "95% CI": ci(pooled_df["spearman_lo"], pooled_df["spearman_hi"]),
+        "pairwise_acc": pooled_df["pairwise_acc"].round(3),
+        "pairwise 95% CI": ci(pooled_df["pairwise_lo"], pooled_df["pairwise_hi"]),
+        "gain_vs_baseline": pooled_df["gain_vs_baseline"].round(3),
+        "gain 95% CI": ci(pooled_df["gain_lo"], pooled_df["gain_hi"]),
+        "P(gain>0)": pooled_df["p_gain_positive"].round(2),
+    })
     v = summary[["target", "feature_set", "spearman_mean", "spearman_std", "r2_mean",
                  "spearman_gain_vs_baseline", "folds_better_than_baseline"]]
     folds = (f"folds hold out whole `{group_col}` groups" if group_col
@@ -292,7 +353,23 @@ def run_score_training(
     ]
     if fig_path:
         parts += [f"![summary]({Path(fig_path).name})", ""]
-    parts += ["## Held-out performance", "", _fmt(v), ""]
+    parts += [
+        "## Held-out performance (pooled out-of-fold, 95% bootstrap CIs)",
+        "",
+        f"Pre-registered primary comparison: **{PRIMARY_SET} vs baseline** "
+        "(docs/preregistration.md). `pairwise_acc` = share of video pairs ranked in the right "
+        "order (0.5 = chance). `brain_compact` = only the `mean` and `hook` statistics of each "
+        "brain signal; `avg(a,b)` = fixed 50/50 average of the two models' ranks (nothing fitted). "
+        "Gains are paired (same bootstrap resamples). When present, the **confirmatory** rows "
+        "exclude the videos used to choose this analysis (run 1) and are the ones that test it.",
+        "",
+        _fmt(pv),
+        "",
+        "### Per-fold detail",
+        "",
+        _fmt(v),
+        "",
+    ]
     for target in targets:
         parts += [f"## Largest standardized coefficients: {target} (baseline+brain ridge)", "",
                   _fmt(top[top.target == target].drop(columns="target")), ""]
