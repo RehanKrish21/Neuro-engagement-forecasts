@@ -8,6 +8,41 @@ The idea comes from *neuroforecasting*: brain activity measured in a small group
 
 ## Results so far
 
+### Run 2 (interim, pre-registered): 531 videos
+
+Run 2 added 396 new SnapUGC videos (531 in total; dead Snapchat links were filled from a Hugging Face copy of the same videos). The [pre-registered](docs/preregistration.md) test uses only the **396 videos that weren't in run 1**, since run 1 is where the hypothesis came from. Outcome: **ECR**, the share of viewers who stay past 5 s. Held-out predictions, 95% bootstrap CIs. Full report: [docs/results/run2_report.md](docs/results/run2_report.md).
+
+![Run 2 results](docs/results/run2_snapugc_ecr.png)
+
+| On the 396 new videos | Spearman ρ [95% CI] | Picks the better of two | Gain over metadata [95% CI] |
+|---|---|---|---|
+| Metadata baseline (length, title, description) | 0.09 [−0.01, 0.19] | 53% | — |
+| **Brain features only** (98 TRIBE network features) | **0.25 [0.16, 0.34]** | **58.5%** | +0.16 [0.05, 0.28] |
+| Compact brain set (28 features: average + first 5 s) | 0.30 [0.21, 0.39] | 60% | +0.21 [0.09, 0.33] |
+| **Primary: 50/50 average of metadata and brain models** | **0.22 [0.12, 0.31]** | 57.5% | **+0.13 [0.06, 0.19]** |
+
+- **Interim result: predicted brain responses add real predictive value beyond metadata.** On videos the hypothesis was never tuned on, the primary comparison's gain interval sits entirely above zero. The pre-registered *final* test is scheduled at ≥ 700 videos, so this is reported as interim, not final.
+- **Brain features generalised and metadata didn't.** On run 1's videos, metadata still scores 0.36. On the new ones it scores 0.09. Run 1 could only use videos whose Snapchat links still worked, and that subset flattered metadata. Brain features score 0.22–0.25 in both groups.
+
+### The harder question: does the "brain" step beat its own inputs? (exploratory)
+
+TRIBE builds its brain predictions from three AI models' features. Those raw features were recorded during run 2 (396 videos) and used directly as a competing predictor:
+
+![Brain vs raw inputs](docs/results/run2_raw_comparison.png)
+
+| On 396 videos | Spearman ρ [95% CI] | vs all raw features [95% CI] |
+|---|---|---|
+| All raw features (≈22k numbers per video) | 0.36 [0.27, 0.44] | — |
+| Raw **video** features only (V-JEPA 2) | **0.43 [0.35, 0.51]** | +0.07 [−0.01, 0.15] |
+| Raw audio features only (Wav2Vec-BERT) | 0.28 [0.19, 0.38] | −0.07 [−0.15, 0.01] |
+| Raw text features only (Llama 3.2) | 0.16 [0.07, 0.26] | −0.19 [−0.28, −0.10] |
+| Brain features (98 numbers) | 0.30 [0.21, 0.39] | −0.06 [−0.15, 0.04] |
+| 50/50 average of raw and brain | 0.38 [0.30, 0.47] | +0.03 [−0.02, 0.08] |
+
+- **No: TRIBE's predicted brain activity does not beat the AI features it's computed from.** The best single predictor of the 5-second hook is V-JEPA 2's *video* representation (ρ = 0.43). Most of the signal is visual.
+- **What the brain step does buy is compression and interpretability.** It turns ~22,000 opaque numbers into 98 (or 28) named, brain-network-level features that keep most of the predictive signal. Its predictions only partly overlap with the raw model's (ρ = 0.41 between them).
+- This was added before run 2 as an exploratory analysis (logged in the preregistration), not part of the primary test.
+
 ### Run 1 (exploratory): 135 real Snapchat videos
 
 TRIBE v2 was run on 135 videos from [SnapUGC](https://github.com/dasongli1/SnapUGC_Engagement) on free Kaggle T4 GPUs. The outcome is **ECR**, the share of viewers who keep watching past 5 seconds (a "hook" score). Every number below is computed on videos the model did not see during training (5-fold cross-validation); intervals are 95% bootstrap CIs over videos.
@@ -26,11 +61,8 @@ What this does and doesn't show:
 - **It is on par with simple metadata, not better.** The brain-minus-baseline difference is −0.06 [−0.24, +0.13]. With 135 videos this sample can't separate them.
 - **It may be complementary.** Brain and baseline predictions correlate only 0.36, and brain predictions still track ECR after accounting for the baseline (partial ρ = 0.19). A single combined model with 101 features couldn't exploit this on ~108 training videos per fold. A simple 50/50 average scored higher (gain +0.03 [−0.07, +0.14]), but it was picked after seeing the data, so it's a hypothesis, not a finding.
 
-### Next: does the "brain" step add anything beyond TRIBE's own inputs?
-TRIBE turns three AI models' features (V-JEPA 2 for video, Wav2Vec-BERT for audio, Llama 3.2 for text) into predicted brain activity. From v0.8.0 those **raw input features are recorded during extraction** (no extra GPU time), and every report includes an exploratory comparison of `brain` vs `raw`. If predicted brain activity can't beat its own inputs, the brain framing adds interpretability but not prediction. That's the key question for every "brain-score" product, and it's answered here in the open.
-
-### Run 2 onwards (pre-registered)
-The next runs accumulate more videos (target ≥ 700) and test that hypothesis on **videos not used in run 1**, with the comparison, metrics and decision rule fixed in advance: see [docs/preregistration.md](docs/preregistration.md). Held-out predictions for run 1 are in [docs/results/](docs/results/) for anyone to re-check.
+### Next
+One more run takes the sample past the pre-registered 700 videos for the final test. Then: which brain networks carry the signal, and whether the raw video features plus brain features hold up on a second dataset (SMP-Video). Every run's held-out predictions are in [docs/results/](docs/results/) for anyone to re-check.
 
 <details>
 <summary>Pipeline check on synthetic data</summary>
@@ -211,7 +243,8 @@ Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --sh
 
 - [x] SnapUGC support (label file + sampled video download; ECR / NAWP targets)
 - [x] Run TRIBE v2 on a SnapUGC subset and publish the real comparison (run 1, 135 videos)
-- [ ] Pre-registered run 2+: ≥ 700 videos, confirmatory test on new videos
+- [x] Run 2: 531 videos, interim pre-registered test + raw-feature comparison
+- [ ] Run 3: pass 700 videos for the final pre-registered test
 - [ ] Run on a real channel's back catalogue with YouTube Analytics retention curves
 - [x] Raw-feature baseline: TRIBE's own V-JEPA 2 / Wav2Vec-BERT / Llama 3.2 inputs, recorded during extraction (v0.8.0)
 - [ ] Train a subcortical (ventral striatum) readout with `tribev2.grids.run_subcortical`
