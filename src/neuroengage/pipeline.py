@@ -220,6 +220,7 @@ def run_score_training(
     n_boot: int = 2000,
     exploratory_ids: set[str] | None = None,
     raw_features: pd.DataFrame | None = None,
+    audio_features: pd.DataFrame | None = None,
 ) -> dict:
     """Video-level evaluation against per-video scores (no retention curves).
 
@@ -232,6 +233,16 @@ def run_score_training(
     ECR. ``manifest`` holds ``video_id``, the target columns and any baseline
     columns. ``group_col`` (e.g. creator) makes folds hold out whole groups and,
     with ``normalize_within_group``, z-scores targets within group.
+
+    ``raw_features`` (from :func:`neuroengage.tribe_runner.raw_feature_table`)
+    adds an exploratory section on the videos that have them: the features
+    TRIBE is built on (V-JEPA 2, Wav2Vec-BERT, Llama 3.2) used directly. It
+    asks whether TRIBE's brain step adds anything beyond its own inputs.
+
+    ``audio_features`` (from :func:`neuroengage.audio.audio_feature_table`)
+    adds an exploratory audio section: interpretable sound descriptors and
+    AudioSet tags/embeddings (music, speech timing, beats), alone and combined
+    with brain and video features.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -335,6 +346,13 @@ def run_score_training(
         info["n_videos_with_raw"] = int(video["video_id"].isin(set(raw_features["video_id"])).sum())
         (out_dir / "run_info.json").write_text(json.dumps(info, indent=2))
 
+    audio_section: list[str] = []
+    if audio_features is not None and len(audio_features):
+        audio_section = _audio_comparison(video, audio_features, raw_features, targets, sets, group_col,
+                                          normalize_within_group, n_splits, seed, n_boot, out_dir, ci)
+        info["n_videos_with_audio"] = int(video["video_id"].isin(set(audio_features["video_id"].astype(str))).sum())
+        (out_dir / "run_info.json").write_text(json.dumps(info, indent=2))
+
     pv = pd.DataFrame({
         "subset": pooled_df["subset"],
         "target": pooled_df["target"],
@@ -379,6 +397,7 @@ def run_score_training(
         "",
     ]
     parts += raw_section
+    parts += audio_section
     for target in targets:
         parts += [f"## Largest standardized coefficients: {target} (baseline+brain ridge)", "",
                   _fmt(top[top.target == target].drop(columns="target")), ""]
@@ -387,6 +406,93 @@ def run_score_training(
 
 
 MIN_RAW_VIDEOS = 50
+
+
+def _audio_comparison(video, audio_features, raw_features, targets, sets, group_col,
+                      normalize_within_group, n_splits, seed, n_boot, out_dir, ci) -> list[str]:
+    """Exploratory: dedicated audio features vs (and combined with) brain and video features."""
+    audio_features = audio_features.assign(video_id=audio_features["video_id"].astype(str))
+    data = video.merge(audio_features, on="video_id")
+    raw_cols: list[str] = []
+    if raw_features is not None and len(raw_features):
+        raw = raw_features.assign(video_id=raw_features["video_id"].astype(str))
+        with_raw = data.merge(raw, on="video_id")
+        if len(with_raw) >= MIN_RAW_VIDEOS:  # compare against TRIBE's inputs on the same videos
+            data = with_raw
+            raw_cols = [c for c in raw.columns if c.startswith("raw:")]
+    title = "## Audio features (exploratory, added 2026-11-27)"
+    if len(data) < MIN_RAW_VIDEOS:
+        return [title, "", f"Skipped: only {len(data)} videos have audio features (need {MIN_RAW_VIDEOS}).", ""]
+    desc = [c for c in audio_features.columns if c.startswith("aud:") and not c.startswith("aud:tag_")
+            and c != "aud:time_to_speech_s"]
+    tags = [c for c in audio_features.columns if c.startswith("aud:tag_") or c == "aud:time_to_speech_s"]
+    emb = [c for c in audio_features.columns if c.startswith("audemb:")]
+    asets = {"baseline": sets["baseline"], "brain": sets["brain"], "audio_descriptors": desc}
+    if tags:
+        asets["audio_tags"] = tags
+        asets["audio_interpretable"] = desc + tags
+    if emb:
+        asets["audio_ast"] = emb + tags
+    interp = asets.get("audio_interpretable", desc)
+    asets["brain+audio_interpretable"] = sets["brain"] + interp
+    asets["baseline+audio_interpretable"] = sets["baseline"] + interp
+    raw_audio = [c for c in raw_cols if c.startswith("raw:audio:")]
+    raw_video = [c for c in raw_cols if c.startswith("raw:video:")]
+    if raw_audio:
+        asets["raw_audio (Wav2Vec-BERT)"] = raw_audio
+    if raw_video:
+        asets["raw_video"] = raw_video
+        if emb:
+            asets["raw_video+audio_ast"] = raw_video + emb + tags
+    set_models = {k: "ridge_wide" for k in asets if k.startswith(("raw", "audio_ast"))}
+    ensembles = {}
+    if raw_video and emb:
+        ensembles["avg(raw_video,audio_ast)"] = ("raw_video", "audio_ast")
+    if emb:
+        ensembles["avg(brain,audio_ast)"] = ("brain", "audio_ast")
+    tables = []
+    for target in targets:
+        col = target
+        if group_col and normalize_within_group:
+            col = f"{target}__group_z"
+            data[col] = creator_normalize(data, target, creator_col=group_col).to_numpy()
+        res = evaluate_video_model(data, col, asets, group_col=group_col, n_splits=n_splits, seed=seed,
+                                   ensembles=ensembles, set_models=set_models)
+        res.oof_predictions.to_csv(out_dir / f"oof_audio_{target}.csv", index=False)
+        tables.append(pooled_metrics(res.oof_predictions, baseline="baseline", n_boot=n_boot, seed=seed)
+                      .assign(target=target))
+    t = pd.concat(tables, ignore_index=True)
+    t.to_csv(out_dir / "audio_comparison_metrics.csv", index=False)
+    try:
+        from .plots import plot_pooled
+
+        plot_pooled(t.assign(subset="audio"), out_dir / "audio_comparison.png",
+                    title=f"Audio features vs brain and video ({len(data)} videos)")
+    except ImportError:
+        pass
+    tv = pd.DataFrame({
+        "target": t["target"], "feature_set": t["feature_set"],
+        "spearman": t["spearman"].round(3), "95% CI": ci(t["spearman_lo"], t["spearman_hi"]),
+        "pairwise_acc": t["pairwise_acc"].round(3), "pairwise 95% CI": ci(t["pairwise_lo"], t["pairwise_hi"]),
+        "gain_vs_baseline": t["gain_vs_baseline"].round(3), "gain 95% CI": ci(t["gain_lo"], t["gain_hi"]),
+        "P(gain>0)": t["p_gain_positive"].round(2),
+    })
+    return [
+        title,
+        "",
+        f"{len(data)} videos{' (those with raw features too)' if raw_cols else ''}. "
+        f"`audio_descriptors` ({len(desc)}): loudness, silence, sound onsets, beat strength/tempo and "
+        f"brightness, focused on the first 5 s. `audio_tags` ({len(tags)}): AudioSet probabilities "
+        "(speech, music, singing, rapping, laughter, sound effects, animals, silence) for the first 5 s, "
+        "second by second for speech and music, and for the whole video, plus time to first speech. "
+        f"`audio_ast` adds AST's general-audio embedding ({len(emb)} numbers). Gains are relative to the "
+        "metadata baseline. Not part of the pre-registered primary test.",
+        "",
+        "![audio comparison](audio_comparison.png)",
+        "",
+        _fmt(tv),
+        "",
+    ]
 
 
 def _raw_comparison(video, raw_features, targets, sets, group_col, normalize_within_group,

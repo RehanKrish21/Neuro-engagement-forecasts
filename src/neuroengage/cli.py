@@ -1,4 +1,4 @@
-"""Command line: ``neuroengage {demo,extract,merge-shards,train,train-scores,snapugc-download,snapugc-prepare,score}``."""
+"""Command line: ``neuroengage {demo,extract,audio-extract,merge-shards,train,train-scores,snapugc-download,snapugc-prepare,score}``."""
 
 from __future__ import annotations
 
@@ -66,6 +66,16 @@ def _snapugc_download(args) -> None:
     need = max(args.n - len(done), 0)
     if done:
         print(f"{len(done)} videos already have predictions; downloading candidates for {need} more")
+    if args.redownload_done and done:
+        # videos processed in earlier runs: fetch the files again (e.g. for audio features)
+        redo = labels[labels["video_id"].isin(done)]
+        fb = None
+        if args.mirror:
+            from .snapugc import hf_mirror_index
+
+            fb = hf_mirror_index(args.mirror, cache_path=Path(args.videos_dir).parent / f"{args.mirror}_index.json")
+        rlog = download_videos(redo, args.videos_dir, workers=args.workers, fallback_urls=fb)
+        print("Re-downloaded earlier videos:", rlog["status"].value_counts().to_dict())
     if need == 0:
         print("Nothing to download")
         return
@@ -107,6 +117,25 @@ def _raw(preds_dir: str, manifest: pd.DataFrame):
     return table
 
 
+def _audio(audio_dir: str, manifest: pd.DataFrame):
+    if not audio_dir:
+        return None
+    from .audio import audio_feature_table
+
+    table = audio_feature_table(audio_dir, ids=set(manifest["video_id"].astype(str)))
+    print(f"Audio features found for {len(table)} videos")
+    return table
+
+
+def _audio_extract(args) -> None:
+    from .audio import AudioTagger, extract_audio_features
+
+    manifest = pd.read_csv(args.manifest, dtype={"video_id": str})
+    tagger = None if args.no_tagger else AudioTagger(device=args.device)
+    log = extract_audio_features(manifest, args.out, tagger=tagger, overwrite=args.overwrite)
+    print(log["status"].value_counts().to_string())
+
+
 def _train_scores(args) -> None:
     from .pipeline import run_score_training
 
@@ -122,6 +151,7 @@ def _train_scores(args) -> None:
         n_splits=args.folds, seed=args.seed, title=args.title, n_boot=args.n_boot,
         exploratory_ids=_exploratory(args.exploratory_ids),
         raw_features=_raw(args.raw_from, manifest),
+        audio_features=_audio(args.audio_from, manifest),
     )
     print(f"Wrote {args.out}/report.md")
 
@@ -222,6 +252,8 @@ def main(argv: list[str] | None = None) -> None:
     sd.add_argument("--seed", type=int, default=0)
     sd.add_argument("--id-col", default="")
     sd.add_argument("--done-dir", default="", help="preds/ folder of earlier runs: skip those videos")
+    sd.add_argument("--redownload-done", action="store_true",
+                    help="Also fetch video files for videos processed in earlier runs (for audio features)")
     sd.add_argument("--mirror", default="", choices=["", "tcm03"],
                     help="Fall back to an unofficial Hugging Face copy of the SnapUGC videos for dead links")
     sd.set_defaults(func=_snapugc_download)
@@ -240,6 +272,8 @@ def main(argv: list[str] | None = None) -> None:
     ts_.add_argument("--seed", type=int, default=0)
     ts_.add_argument("--title", default="Results")
     ts_.add_argument("--n-boot", type=int, default=2000, help="Bootstrap resamples for 95%% CIs")
+    ts_.add_argument("--audio-from", default="",
+                     help="audio features folder (from audio-extract): adds the audio comparison")
     ts_.add_argument("--raw-from", default="",
                      help="preds/ folder: add the raw-feature baseline (TRIBE's own inputs)")
     ts_.add_argument("--exploratory-ids", default="",
@@ -263,6 +297,14 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--max-hours", type=float, default=0,
                    help="Stop starting new videos after this many hours (0 = no limit)")
     e.set_defaults(func=_extract)
+
+    au = sub.add_parser("audio-extract", help="Audio descriptors + AudioSet tags/embeddings (AST) per video")
+    au.add_argument("--manifest", required=True, help="CSV with video_id,path")
+    au.add_argument("--out", required=True, help="Folder for <video_id>.npz audio features")
+    au.add_argument("--no-tagger", action="store_true", help="Descriptors only (no AST model)")
+    au.add_argument("--device", default="auto")
+    au.add_argument("--overwrite", action="store_true")
+    au.set_defaults(func=_audio_extract)
 
     mg = sub.add_parser("merge-shards", help="Combine sharded extract outputs")
     mg.add_argument("--out", default="work")

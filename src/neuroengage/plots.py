@@ -128,6 +128,9 @@ SET_COLORS = {  # fixed categorical order: colour follows the feature set, never
     "avg(baseline,brain_compact)": "#6250d6",
     "raw": "#e34948",
     "avg(raw,brain)": "#9085e9",
+    "audio_interpretable": "#199e70",
+    "audio_ast": "#c98500",
+    "raw_video": "#d55181",
 }
 
 

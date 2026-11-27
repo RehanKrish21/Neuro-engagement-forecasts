@@ -62,7 +62,7 @@ What this does and doesn't show:
 - **It may be complementary.** Brain and baseline predictions correlate only 0.36, and brain predictions still track ECR after accounting for the baseline (partial ρ = 0.19). A single combined model with 101 features couldn't exploit this on ~108 training videos per fold. A simple 50/50 average scored higher (gain +0.03 [−0.07, +0.14]), but it was picked after seeing the data, so it's a hypothesis, not a finding.
 
 ### Next
-One more run takes the sample past the pre-registered 700 videos for the final test. Then: which brain networks carry the signal, and whether the raw video features plus brain features hold up on a second dataset (SMP-Video). Every run's held-out predictions are in [docs/results/](docs/results/) for anyone to re-check.
+One more run takes the sample past the pre-registered 700 videos for the final test. It also adds **audio features built for music and sound** (TRIBE hears videos through a speech model): loudness and silence in the opening, beats and tempo, and AudioSet-trained tags for speech, music, singing and laughter, second by second. These go into an exploratory comparison against brain and video features. Then: which brain networks carry the signal, and whether the raw video features plus brain features hold up on a second dataset (SMP-Video). Every run's held-out predictions are in [docs/results/](docs/results/) for anyone to re-check.
 
 <details>
 <summary>Pipeline check on synthetic data</summary>
@@ -116,7 +116,7 @@ flowchart LR
 git clone https://github.com/RehanKrish21/Neuro-engagement-forecasts.git
 cd Neuro-engagement-forecasts
 pip install -e ".[test]"
-pytest -q                                 # 45 tests
+pytest -q                                 # 53 tests
 neuroengage demo --out results/demo       # synthetic data with planted signal
 neuroengage demo --null --out results/null  # control: no signal → no gain
 neuroengage demo --snapugc --out results/snap  # per-video scores, SnapUGC-shaped
@@ -244,7 +244,7 @@ Elsewhere (any GPU box), the same split works by hand: `neuroengage extract --sh
 - [x] SnapUGC support (label file + sampled video download; ECR / NAWP targets)
 - [x] Run TRIBE v2 on a SnapUGC subset and publish the real comparison (run 1, 135 videos)
 - [x] Run 2: 531 videos, interim pre-registered test + raw-feature comparison
-- [ ] Run 3: pass 700 videos for the final pre-registered test
+- [ ] Run 3: pass 700 videos for the final pre-registered test (+ exploratory audio features)
 - [ ] Run on a real channel's back catalogue with YouTube Analytics retention curves
 - [x] Raw-feature baseline: TRIBE's own V-JEPA 2 / Wav2Vec-BERT / Llama 3.2 inputs, recorded during extraction (v0.8.0)
 - [ ] Train a subcortical (ventral striatum) readout with `tribev2.grids.run_subcortical`
@@ -262,13 +262,14 @@ src/neuroengage/
   modeling.py       grouped CV, creator normalization, feature-set comparison
   pipeline.py       end-to-end train/evaluate → report.md + figure + models
   snapugc.py        SnapUGC label loader + stratified subsampling → manifest
+  audio.py          sound features: loudness/silence/onsets/beat + AudioSet tags & embedding (AST)
   parallel.py       one extraction worker per GPU, progress/ETA, merge
   synthetic.py      planted-signal and null synthetic data for demos/tests
   cli.py            neuroengage {demo, extract, merge-shards, train, train-scores, snapugc-prepare, score}
 notebooks/colab_snapugc.ipynb   Colab: install → smoke test → SnapUGC run on a GPU
 notebooks/kaggle_snapugc.ipynb  Kaggle: same, plus background 'Save & Run All' runs
 cloud/modal_app.py              Modal: same pipeline, sharded across several GPUs
-tests/              45 tests, including signal-recovery and null-control checks
+tests/              53 tests, including signal-recovery and null-control checks
 ```
 
 ## References

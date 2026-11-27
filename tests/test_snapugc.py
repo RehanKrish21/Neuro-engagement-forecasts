@@ -215,3 +215,29 @@ def test_mirror_fallback_for_dead_links(tmp_path, monkeypatch):
         assert (tmp_path / "v" / "dead.mp4").exists()
     finally:
         server.shutdown()
+
+
+def test_redownload_done_fetches_earlier_videos(tmp_path, monkeypatch):
+    from neuroengage.cli import main
+
+    src = tmp_path / "cdn"
+    src.mkdir()
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 300
+    ids = [f"vid{i:03d}" for i in range(12)]
+    for v in ids:
+        (src / f"{v}.bin").write_bytes(mp4)
+    server, base = _serve(src, monkeypatch)
+    try:
+        pd.DataFrame({"Id": ids, "ECR": np.linspace(0, 1, 12), "Title": "t", "Description": "",
+                      "Download_link": [f"{base}/{v}.bin" for v in ids]}).to_csv(tmp_path / "labels.csv", index=False)
+        preds = tmp_path / "preds"
+        preds.mkdir()
+        for v in ids[:4]:                                   # processed in an earlier run
+            (preds / f"{v}.npz").write_bytes(b"")
+        vids = tmp_path / "videos"
+        main(["snapugc-download", "--labels", str(tmp_path / "labels.csv"), "--videos-dir", str(vids),
+              "--n", "6", "--done-dir", str(preds), "--redownload-done", "--oversample", "1.0"])
+        on_disk = {p.stem for p in vids.glob("*.mp4")}
+        assert set(ids[:4]) <= on_disk and len(on_disk - set(ids[:4])) == 2
+    finally:
+        server.shutdown()
